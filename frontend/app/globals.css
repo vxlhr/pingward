@@ -1,0 +1,91 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f5f7fa;
+  --surface: #ffffff;
+  --surface-2: #f1f3f6;
+  --border: #e3e6eb;
+  --foreground: #0f1419;
+  --muted: #5d6673;
+  --accent: #087f58;
+  --on-accent: #ffffff;
+  --brand: #0a8f63;
+  --up: #16a34a;
+  --up-soft: #dcfce7;
+  --down: #dc2626;
+  --down-soft: #fee2e2;
+  --paused: #6b7280;
+  --paused-soft: #eceef1;
+  --pending: #b7791f;
+  --pending-soft: #fdf2d8;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #10131f;
+    --surface: #161a28;
+    --surface-2: #1d2232;
+    --border: #2a3043;
+    --foreground: #eef0f6;
+    --muted: #8a93a8;
+    --accent: #2ef0a0;
+    --on-accent: #062a1c;
+    --brand: #2ef0a0;
+    --up: #22c55e;
+    --up-soft: #0f2a1a;
+    --down: #f05252;
+    --down-soft: #2e1315;
+    --paused: #8b93a3;
+    --paused-soft: #232838;
+    --pending: #e0a43a;
+    --pending-soft: #2a2213;
+  }
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-border: var(--border);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-on-accent: var(--on-accent);
+  --color-brand: var(--brand);
+  --color-up: var(--up);
+  --color-up-soft: var(--up-soft);
+  --color-down: var(--down);
+  --color-down-soft: var(--down-soft);
+  --color-paused: var(--paused);
+  --color-paused-soft: var(--paused-soft);
+  --color-pending: var(--pending);
+  --color-pending-soft: var(--pending-soft);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+}
+
+dialog::backdrop {
+  background: rgb(0 0 0 / 0.55);
+  backdrop-filter: blur(2px);
+}
+
+@keyframes pulse-ring {
+  0% { transform: scale(1); opacity: 0.6; }
+  100% { transform: scale(2.4); opacity: 0; }
+}
+.pulse-dot::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  background: currentColor;
+  animation: pulse-ring 1.8s ease-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .pulse-dot::after { animation: none; }
+}

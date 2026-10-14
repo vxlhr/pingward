@@ -1,0 +1,45 @@
+# Dependencies
+node_modules/
+
+# Build output
+frontend/.next/
+frontend/out/
+frontend/next-env.d.ts
+*.tsbuildinfo
+dist/
+
+# Cloudflare / Wrangler (local D1 state, secrets)
+.wrangler/
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+
+# Env files (keep examples)
+.env
+.env.*
+!.env.example
+!.env.development
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Test / coverage
+coverage/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.claude/
+
+# Local secret files for `wrangler secret bulk`
+*.secrets.json
+
+# Local-only backups (e.g. the pre-cleanup git history bundle)
+backup/

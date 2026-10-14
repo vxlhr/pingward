@@ -1,0 +1,26 @@
+{
+  "name": "pingward-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "predev": "node -e \"require('fs').mkdirSync('../frontend/out',{recursive:true})\"",
+    "dev": "wrangler dev --test-scheduled --var ALLOWED_ORIGINS:http://localhost:3000 --var ALLOW_UNAUTHENTICATED_WRITES:true",
+    "deploy": "wrangler deploy",
+    "db:migrate:local": "wrangler d1 migrations apply pingward-db --local",
+    "db:migrate:remote": "wrangler d1 migrations apply pingward-db --remote",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "hono": "^4.13.13",
+    "@pingward/shared": "*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261013.1",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.4",
+    "wrangler": "^4.150.0"
+  },
+  "license": "MIT"
+}
