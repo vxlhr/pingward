@@ -30,9 +30,12 @@ const isTrue = (v: string | undefined) => v?.toLowerCase() === 'true';
 async function isAdmin(c: Context<{ Bindings: Env }>): Promise<boolean> {
   const token = c.env.API_TOKEN?.trim();
   if (!token) return isTrue(c.env.ALLOW_UNAUTHENTICATED_WRITES);
+  // Same rules as for writes: a malformed or weak token never grants admin access.
+  if (!VALID_TOKEN.test(token) || !isStrongToken(token)) return false;
   const sent = /^Bearer\s+(.+)$/i.exec(c.req.header('Authorization') ?? '')?.[1]?.trim();
   return Boolean(sent) && (await safeEqual(token, sent as string));
 }
+
 const HOUR_MS = 60 * 60 * 1000;
 
 // ---------- Middleware ----------

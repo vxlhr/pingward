@@ -403,6 +403,12 @@ describe('private monitors', () => {
     expect((await app.request(path, {}, e)).status).toBe(404);
   });
 
+  it('a weak server token never unlocks private monitors', async () => {
+    const { env: e, sql } = recordingEnv(null, { API_TOKEN: 'change-me' });
+    await app.request('/api/monitors', { headers: { Authorization: 'Bearer change-me' } }, e);
+    expect(sql.find((q) => q.includes('FROM monitors'))).toContain('WHERE is_public = 1');
+  });
+
   it('settings (capacity usage) are admin only', async () => {
     const { env: e } = recordingEnv(null);
     expect((await app.request('/api/settings', {}, e)).status).toBe(401);
