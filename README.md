@@ -310,7 +310,7 @@ Setting the token again simply replaces the old one, and the Worker picks it up 
 
 ## Responsible use
 
-PingWard sends an HTTP `GET` to each target as often as once a minute, with the user agent `PingWard/1.0 (+https://github.com/vxlhr/pingward)`. Only monitor sites you own or have permission to monitor, and respect the target's terms of service. This software is provided "as is" under the MIT license, with no warranty.
+PingWard sends an HTTP `GET` to each target as often as once a minute, with the user agent `PingWard/1.0 (+https://github.com/vxlhr/pingward)`. Monitor your own sites, or public services lightly: the live demo sends one `GET` every 5 minutes to the public front page or health endpoint of a few well-known services, which is less than one person browsing them. Respect each target's terms of service, and don't use PingWard to load-test or scrape sites you don't own. This software is provided "as is" under the MIT license, with no warranty.
 
 ## Free-tier notes
 
