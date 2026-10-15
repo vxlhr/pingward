@@ -104,9 +104,11 @@ pingward/
 │   ├── components/         # cards, dialogs, chart
 │   ├── lib/api.ts          # typed API client
 │   └── public/_headers     # security + cache headers for static assets
+├── docker/start.sh         # container entrypoint (migrations, cron timer, Worker)
+├── Dockerfile, docker-compose.yml
 ├── wrangler.toml           # Worker config: assets, D1, rate limiter, cron trigger, vars
 ├── .dev.vars.example       # secrets (API_TOKEN, TELEGRAM_BOT_TOKEN), also read by "Deploy to Cloudflare"
-└── .github/workflows/ci.yml
+└── .github/workflows/      # ci.yml (tests, build, smoke test), docker.yml (image build, test, publish)
 ```
 
 ## API
@@ -229,6 +231,23 @@ npm run deploy
 Wrangler prints your URL (`https://pingward.<your-subdomain>.workers.dev`). Open it, click **Sign in**, paste your token, and add your first monitor. Visitors without the token see a read-only demo. Link previews pick up your URL automatically.
 
 Each later `npm run deploy` rebuilds the dashboard and ships the Worker and its assets together.
+
+### Self-host with Docker
+
+Prefer your own server? The same Worker also runs in a container, on Cloudflare's open-source runtime (workerd) with a local SQLite database:
+
+```bash
+docker run -d --name pingward -p 8787:8787 \
+  -e API_TOKEN=<16+ characters> \
+  -v pingward-data:/data \
+  ghcr.io/vxlhr/pingward:latest
+```
+
+Or with Compose: `API_TOKEN=<16+ characters> docker compose up -d`. Then open http://localhost:8787. Add `-e TELEGRAM_BOT_TOKEN=…` for Telegram alerts.
+
+- Data lives in the `/data` volume; migrations run on start, and an internal timer fires the cron every minute.
+- Checks run from your server instead of Cloudflare's edge, so the free-plan limits don't apply. Raise the capacity in **Settings** if you need more.
+- The container runs Wrangler's local runtime, which is fine for personal and small-team use. For a public, high-traffic deployment, prefer the Cloudflare deploy above.
 
 ### Telegram alerts (optional)
 

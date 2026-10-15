@@ -1,0 +1,17 @@
+# Self-hosted PingWard. Usage:
+#   API_TOKEN=<16+ chars> docker compose up -d      then open http://localhost:8787
+services:
+  pingward:
+    image: ghcr.io/vxlhr/pingward:latest
+    build: .
+    ports:
+      - "8787:8787"
+    environment:
+      API_TOKEN: ${API_TOKEN:?Set API_TOKEN (16+ characters of letters, digits and - _ . ~ + /)}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+    volumes:
+      - pingward-data:/data
+    restart: unless-stopped
+
+volumes:
+  pingward-data:

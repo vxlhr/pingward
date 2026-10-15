@@ -1,0 +1,15 @@
+**/node_modules
+**/.wrangler
+**/.next
+frontend/out
+.git
+.github
+.claude
+backup
+docs
+*.secrets.json
+.dev.vars
+**/.env
+**/.env.local
+**/.env.production
+*.log
