@@ -283,9 +283,9 @@ describe('Telegram', () => {
             }),
       ),
     );
-    const anonymous = await app.request('/api/telegram', {}, env({ API_TOKEN: 's3cret', TELEGRAM_BOT_TOKEN: TOKEN }));
+    const anonymous = await app.request('/api/telegram', {}, env({ API_TOKEN: 's3cret-admin-token-0123', TELEGRAM_BOT_TOKEN: TOKEN }));
     expect(anonymous.status).toBe(401);
-    const res = await app.request('/api/telegram', { headers: { Authorization: 'Bearer s3cret' } }, env({ API_TOKEN: 's3cret', TELEGRAM_BOT_TOKEN: TOKEN }));
+    const res = await app.request('/api/telegram', { headers: { Authorization: 'Bearer s3cret-admin-token-0123' } }, env({ API_TOKEN: 's3cret-admin-token-0123', TELEGRAM_BOT_TOKEN: TOKEN }));
     vi.unstubAllGlobals();
     expect(await res.json()).toEqual<TelegramInfo>({
       configured: true,
@@ -376,7 +376,7 @@ describe('private monitors', () => {
       return s;
     };
     const batch = vi.fn(async (statements: unknown[]) => statements.map(() => ({ results: [], meta: { changes: 1 } })));
-    return { env: env({ DB: { prepare: stmt, batch } as unknown as D1Database, API_TOKEN: 's3cret', ...overrides }), sql };
+    return { env: env({ DB: { prepare: stmt, batch } as unknown as D1Database, API_TOKEN: 's3cret-admin-token-0123', ...overrides }), sql };
   }
 
   it('anonymous visitors only get public monitors', async () => {
@@ -387,7 +387,7 @@ describe('private monitors', () => {
 
   it('the admin gets every monitor', async () => {
     const { env: e, sql } = recordingEnv(null);
-    await app.request('/api/monitors', { headers: { Authorization: 'Bearer s3cret' } }, e);
+    await app.request('/api/monitors', { headers: { Authorization: 'Bearer s3cret-admin-token-0123' } }, e);
     expect(sql.find((q) => q.includes('FROM monitors'))).not.toContain('is_public = 1');
   });
 
@@ -436,7 +436,7 @@ describe('settings API', () => {
   });
 
   it('requires the token to change settings', async () => {
-    const res = await app.request('/api/settings', send('PATCH', { checksPerMinute: 4 }), env({ API_TOKEN: 's3cret' }));
+    const res = await app.request('/api/settings', send('PATCH', { checksPerMinute: 4 }), env({ API_TOKEN: 's3cret-admin-token-0123' }));
     expect(res.status).toBe(401);
   });
 });
@@ -448,15 +448,15 @@ describe('auth (fail closed)', () => {
   });
 
   it('requires the bearer token when API_TOKEN is set', async () => {
-    const res = await app.request('/api/monitors', post(valid), env({ API_TOKEN: 's3cret' }));
+    const res = await app.request('/api/monitors', post(valid), env({ API_TOKEN: 's3cret-admin-token-0123' }));
     expect(res.status).toBe(401);
   });
 
   it('accepts the right token', async () => {
     const res = await app.request(
       '/api/monitors',
-      post({ url: 'nope', name: 'A' }, { Authorization: 'Bearer s3cret' }),
-      env({ API_TOKEN: 's3cret' }),
+      post({ url: 'nope', name: 'A' }, { Authorization: 'Bearer s3cret-admin-token-0123' }),
+      env({ API_TOKEN: 's3cret-admin-token-0123' }),
     );
     expect(res.status).toBe(400); // got past auth, failed validation
   });
@@ -464,10 +464,18 @@ describe('auth (fail closed)', () => {
   it('ignores a line break pasted around the secret', async () => {
     const res = await app.request(
       '/api/monitors',
-      post({ url: 'nope', name: 'A' }, { Authorization: 'Bearer s3cret' }),
-      env({ API_TOKEN: '\ns3cret\r\n' }),
+      post({ url: 'nope', name: 'A' }, { Authorization: 'Bearer s3cret-admin-token-0123' }),
+      env({ API_TOKEN: '\ns3cret-admin-token-0123\r\n' }),
     );
     expect(res.status).toBe(400); // got past auth, failed validation
+  });
+
+  it('refuses a weak or placeholder admin token', async () => {
+    for (const API_TOKEN of ['short-token', 'change-me', 'CHANGE-ME']) {
+      const res = await app.request('/api/monitors', post(valid, { Authorization: `Bearer ${API_TOKEN}` }), env({ API_TOKEN }));
+      expect(res.status, API_TOKEN).toBe(500);
+      expect(((await res.json()) as { error: string }).error).toContain('too weak');
+    }
   });
 
   it('explains a token with unsupported characters instead of failing silently', async () => {
@@ -477,12 +485,12 @@ describe('auth (fail closed)', () => {
   });
 
   it('keeps reads public by default', async () => {
-    const res = await app.request('/api/monitors', {}, envWithDb({}, { API_TOKEN: 's3cret' }));
+    const res = await app.request('/api/monitors', {}, envWithDb({}, { API_TOKEN: 's3cret-admin-token-0123' }));
     expect(res.status).toBe(200);
   });
 
   it('protects reads when READ_PROTECTED=true', async () => {
-    const res = await app.request('/api/monitors', {}, env({ API_TOKEN: 's3cret', READ_PROTECTED: 'true' }));
+    const res = await app.request('/api/monitors', {}, env({ API_TOKEN: 's3cret-admin-token-0123', READ_PROTECTED: 'true' }));
     expect(res.status).toBe(401);
   });
 

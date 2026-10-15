@@ -1,27 +1,29 @@
 name = "pingward"
-main = "src/index.ts"
+main = "worker/src/index.ts"
 compatibility_date = "2026-10-01"
 compatibility_flags = ["nodejs_compat"]
 
 # The dashboard (Next.js static export) is served by this same Worker.
-# Only /api/* runs Worker code; everything else is a static asset from the CDN.
-# (/__scheduled lets `wrangler dev --test-scheduled` trigger the cron locally;
-#  in production it just falls through to the 404 page.)
+# Only /api/* (and "/", to fill in link-preview URLs) runs Worker code; everything else is a
+# static asset straight from the CDN. /__scheduled lets `wrangler dev --test-scheduled` trigger
+# the cron locally; in production it just falls through to the 404 page.
 [assets]
-directory = "../frontend/out"
+directory = "frontend/out"
 binding = "ASSETS"
 not_found_handling = "404-page"
-run_worker_first = ["/api/*", "/__scheduled"]
+run_worker_first = ["/api/*", "/__scheduled", "/"]
 
 # Runs every minute; the code decides which monitors are due.
 [triggers]
 crons = ["* * * * *"]
 
+# "Deploy to Cloudflare" provisions this database in your account and fills in the ID.
+# Deploying by hand: `npx wrangler d1 create pingward-db`, then paste the printed ID here.
 [[d1_databases]]
 binding = "DB"
 database_name = "pingward-db"
-# Paste the ID printed by `npx wrangler d1 create pingward-db`.
 database_id = "f8a3c259-a327-4535-baa5-884e07d75c61"
+migrations_dir = "worker/migrations"
 
 # Per-IP limit for /api/* : 100 requests per minute (protects the D1 read quota).
 [[ratelimits]]
@@ -31,15 +33,15 @@ simple = { limit = 100, period = 60 }
 
 [vars]
 # Extra origins allowed to call the API cross-origin (comma-separated).
-# Empty in production: the dashboard is same-origin. `npm run dev` adds http://localhost:3000.
+# Empty in production: the dashboard is same-origin. `npm run dev:worker` adds http://localhost:3000.
 ALLOWED_ORIGINS = ""
 # "true" = the dashboard and read endpoints also need the API token (private mode).
 READ_PROTECTED = "false"
 
-# Secrets (never committed):
-#   local:      worker/.dev.vars  ->  API_TOKEN=...
-#   production: npx wrangler secret put API_TOKEN
-# Without API_TOKEN, production refuses every write (fail closed).
+# Secrets (never committed), see .dev.vars.example:
+#   API_TOKEN           admin token (required; without it production refuses every write)
+#   TELEGRAM_BOT_TOKEN  optional, enables Telegram alerts
+# Set them with `npx wrangler secret put <NAME>` or in the Cloudflare dashboard.
 
 # Workers Logs (free: 200k events/day, 3-day retention). Only our own console output is kept:
 # invocation logs (full request metadata, incl. headers such as Authorization) are switched off.

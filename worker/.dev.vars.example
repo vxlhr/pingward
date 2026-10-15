@@ -1,7 +1,0 @@
-# Copy to .dev.vars for local development (never commit .dev.vars).
-# Without it, `npm run dev` allows writes with no token (ALLOW_UNAUTHENTICATED_WRITES=true).
-# With it, POST/PATCH/DELETE require: Authorization: Bearer <API_TOKEN>
-API_TOKEN=change-me
-
-# Uncomment to make the dashboard private (reads need the token too):
-# READ_PROTECTED=true

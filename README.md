@@ -10,6 +10,8 @@ PingWard checks your websites and APIs on a schedule, records response times, dr
 
 **Live demo:** [pingward.pingward-worker.workers.dev](https://pingward.pingward-worker.workers.dev) (read-only for visitors)
 
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/vxlhr/pingward)
+
 ![PingWard: live status cards for monitored services](docs/preview.png)
 
 ---
@@ -96,12 +98,14 @@ pingward/
 │   │   └── types.ts        # Env bindings
 │   ├── migrations/         # versioned D1 schema (0001_init.sql, ...)
 │   ├── test/               # Vitest unit tests
-│   └── wrangler.toml       # assets, D1, rate limiter, cron trigger, vars
+│   └── tsconfig.json
 ├── frontend/               # Next.js dashboard (static export → frontend/out)
 │   ├── app/                # layout + page
 │   ├── components/         # cards, dialogs, chart
 │   ├── lib/api.ts          # typed API client
 │   └── public/_headers     # security + cache headers for static assets
+├── wrangler.toml           # Worker config: assets, D1, rate limiter, cron trigger, vars
+├── .dev.vars.example       # secrets (API_TOKEN, TELEGRAM_BOT_TOKEN), also read by "Deploy to Cloudflare"
 └── .github/workflows/ci.yml
 ```
 
@@ -163,7 +167,7 @@ npm run cron:local
 
 Or trigger a single run by hand: `curl "http://localhost:8787/__scheduled?cron=*+*+*+*+*"`.
 
-Local dev allows writes without a token so you can try things quickly. To test the real behaviour, copy `worker/.dev.vars.example` to `worker/.dev.vars`, then sign in with the same token in the dashboard.
+Local dev allows writes without a token so you can try things quickly. To test the real behaviour, copy `.dev.vars.example` to `.dev.vars`, then sign in with the same token in the dashboard.
 
 Run the full check suite (typecheck, tests, lint, build):
 
@@ -172,6 +176,19 @@ npm run check
 ```
 
 ## Deploy to your own Cloudflare account (free)
+
+### One click
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/vxlhr/pingward)
+
+1. Click the button and sign in to Cloudflare (a free account is enough, no card required).
+2. Pick a name and choose your GitHub account. Cloudflare copies this repo there, creates the D1 database, and sets up automatic deploys.
+3. Enter an **API_TOKEN**: at least 16 characters of letters, digits and `- _ . ~ + /` (a UUID works well). This is your admin password for the dashboard. Leave **TELEGRAM_BOT_TOKEN** empty unless you want Telegram alerts.
+4. Click **Deploy**. The build creates the tables, publishes the dashboard, and starts the every-minute checks.
+
+Open the URL Cloudflare shows, click **Sign in**, paste your token, and add your first monitor. Every push to your copy of the repo redeploys automatically.
+
+### By hand
 
 | You need | Notes |
 | --- | --- |
@@ -192,37 +209,24 @@ npx wrangler d1 create pingward-db
 ```
 
 > [!IMPORTANT]
-> Copy the `database_id` this prints into `worker/wrangler.toml`, replacing the one already there. The id in the repo belongs to the demo deployment and won't work on your account.
+> Copy the `database_id` this prints into `wrangler.toml`, replacing the one already there. The ID in the repo belongs to the demo deployment and won't work on your account.
 
-**3. Create the tables.** It's safe to re-run, because migrations that were already applied are skipped.
-
-```bash
-npm run db:init:remote
-```
-
-**4. Set your admin token.** Without it, every write is refused.
+**3. Set your admin token.** Without it, every write is refused.
 
 ```bash
-npx wrangler secret put API_TOKEN --config worker/wrangler.toml
+npx wrangler secret put API_TOKEN
 ```
 
 > [!WARNING]
-> Use only letters, digits and `- _ . ~ + /`, at least 20 characters long. Characters like `!`, `@`, `#` or spaces can't be sent as a Bearer token, so you would never be able to sign in. A UUID works well: `node -e "console.log(crypto.randomUUID())"`.
+> Use at least 16 characters of letters, digits and `- _ . ~ + /` only. Characters like `!`, `@`, `#` or spaces can't be sent as a Bearer token, so you could never sign in; short or example values like `change-me` are refused. A UUID works well: `node -e "console.log(crypto.randomUUID())"`.
 
-**5. Deploy.** This builds the dashboard and uploads the Worker with its assets.
+**4. Deploy.** This builds the dashboard, creates or updates the tables, and uploads the Worker with its assets.
 
 ```bash
 npm run deploy
 ```
 
-Wrangler prints your URL (`https://pingward.<your-subdomain>.workers.dev`). Open it, click **Sign in**, paste your token, and add your first monitor. Visitors without the token see a read-only demo.
-
-**6. Optional: link previews.** Point the preview image at your URL, then deploy again.
-
-```bash
-echo "SITE_URL=https://pingward.<your-subdomain>.workers.dev" > frontend/.env.production
-npm run deploy
-```
+Wrangler prints your URL (`https://pingward.<your-subdomain>.workers.dev`). Open it, click **Sign in**, paste your token, and add your first monitor. Visitors without the token see a read-only demo. Link previews pick up your URL automatically.
 
 Each later `npm run deploy` rebuilds the dashboard and ships the Worker and its assets together.
 
@@ -232,7 +236,7 @@ Each later `npm run deploy` rebuilds the dashboard and ships the Worker and its 
 2. Store it as a Worker secret. No redeploy is needed.
 
    ```bash
-   npx wrangler secret put TELEGRAM_BOT_TOKEN --config worker/wrangler.toml
+   npx wrangler secret put TELEGRAM_BOT_TOKEN
    ```
 
 3. Open your new bot in Telegram and press **Start**. For a group, add the bot to the group and send any message. For a channel, make the bot an admin.
@@ -240,7 +244,7 @@ Each later `npm run deploy` rebuilds the dashboard and ships the Worker and its 
 
 You can also type a chat ID by hand: a number such as `123456789` (users) or `-1001234567890` (groups and channels), or `@channelname` for a public channel. One bot serves every monitor; each monitor chooses its own chat.
 
-To make the whole dashboard private, set `READ_PROTECTED = "true"` in `worker/wrangler.toml` and deploy again.
+To make the whole dashboard private, set `READ_PROTECTED = "true"` in `wrangler.toml` and deploy again.
 
 Schema changes go in a new file such as `worker/migrations/0002_add_column.sql`; `npm run db:init:remote` applies only the new ones.
 
@@ -251,10 +255,10 @@ Schema changes go in a new file such as `worker/migrations/0002_add_column.sql`;
 | PowerShell: `npm.ps1 cannot be loaded because running scripts is disabled` | Use `npm.cmd` and `npx.cmd` instead of `npm` and `npx` ([details](#windows-powershell-blocks-npm)) |
 | Signing in fails, or the API answers `API_TOKEN contains unsupported characters` | Your token has a character such as `!`, `@` or a space. Set a new one ([details](#setting-the-token-without-the-interactive-prompt)) |
 | `wrangler secret put` misbehaves: you can't delete what you typed, or a stray `*` shows up | Upload the token from a file instead ([details](#setting-the-token-without-the-interactive-prompt)) |
-| Deploy or migrations fail with an error about the D1 database | `worker/wrangler.toml` still has the demo's `database_id`. Replace it with yours (deploy step 2) |
+| Deploy or migrations fail with an error about the D1 database | `wrangler.toml` still has the demo's `database_id`. Replace it with yours (manual deploy step 2), or use the one-click button |
 | The new `*.workers.dev` URL doesn't load right after the first deploy | A brand-new workers.dev subdomain needs a few minutes for DNS. Wait, then reload |
 | Writes return `403 API_TOKEN is not configured` | Deploy step 4 was skipped. Set the token; no redeploy is needed |
-| Link previews show `localhost` | Do deploy step 6 (`SITE_URL`), then run `npm run deploy` again |
+| The API answers `API_TOKEN is too weak` | Set a longer token (16+ characters, not an example value like `change-me`) |
 | Local dashboard says *Could not reach the API* | The Worker isn't running. Start `npm run preview` (or `npm run dev:worker`) |
 | Locally, "Checked" never updates | `wrangler dev` doesn't fire crons. Run `npm run cron:local` in a second terminal |
 | Adding a monitor returns `409 Not enough check capacity` | Use a longer interval, pause a monitor, or raise the capacity in **Settings** ([capacity model](#capacity-model)) |
@@ -283,7 +287,7 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 
 Some terminals send stray characters into `wrangler secret put`'s hidden prompt. A file avoids that:
 
-1. Create `worker/api-token.secrets.json`. The repo's `.gitignore` already excludes `*.secrets.json`.
+1. Create `api-token.secrets.json`. The repo's `.gitignore` already excludes `*.secrets.json`.
 
    ```json
    { "API_TOKEN": "your-long-token-here" }
@@ -292,7 +296,7 @@ Some terminals send stray characters into `wrangler secret put`'s hidden prompt.
 2. Upload it, then delete the file:
 
    ```bash
-   npx wrangler secret bulk worker/api-token.secrets.json --config worker/wrangler.toml
+   npx wrangler secret bulk api-token.secrets.json
    ```
 
 Setting the token again simply replaces the old one, and the Worker picks it up immediately without a redeploy.

@@ -25,4 +25,16 @@ jobs:
         run: npm run build
       - name: Worker + assets — bundle check (no upload)
         run: npx wrangler deploy --dry-run
-        working-directory: worker
+      - name: Smoke test — boot the Worker and call it
+        run: |
+          npx wrangler d1 migrations apply DB --local
+          npx wrangler dev --port 8787 --var ALLOW_UNAUTHENTICATED_WRITES:true > wrangler-dev.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8787/api/health; then
+              curl -sf http://localhost:8787/ | grep -q '<title>PingWard</title>'
+              exit 0
+            fi
+            sleep 2
+          done
+          cat wrangler-dev.log
+          exit 1

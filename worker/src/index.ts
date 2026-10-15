@@ -17,21 +17,11 @@ import { buildTestPayload, sendDiscord } from './discord';
 import { TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, buildTelegramTest, getTelegramInfo, isBotItself, sendTelegram } from './telegram';
 import { ACTIVE_LOAD_SQL, SELECT_SETTINGS_SQL, applySettingsPatch, settingsFromRows } from './settings';
 import { checkTargetUrl, isDiscordWebhook } from './validation';
+import { MIN_TOKEN_LENGTH, VALID_TOKEN, isStrongToken, safeEqual } from './auth';
 
 const app = new Hono<{ Bindings: Env }>();
 
 const isTrue = (v: string | undefined) => v?.toLowerCase() === 'true';
-
-/** Constant-time string comparison (hash both, compare digests byte by byte). */
-async function safeEqual(a: string, b: string): Promise<boolean> {
-  const enc = new TextEncoder();
-  const [x, y] = await Promise.all([crypto.subtle.digest('SHA-256', enc.encode(a)), crypto.subtle.digest('SHA-256', enc.encode(b))]);
-  const u = new Uint8Array(x);
-  const v = new Uint8Array(y);
-  let diff = 0;
-  for (let i = 0; i < u.length; i++) diff |= u[i] ^ v[i];
-  return diff === 0;
-}
 
 /**
  * Whether this request comes from the admin. Public reads don't require a token, but a valid one
@@ -44,9 +34,6 @@ async function isAdmin(c: Context<{ Bindings: Env }>): Promise<boolean> {
   return Boolean(sent) && (await safeEqual(token, sent as string));
 }
 const HOUR_MS = 60 * 60 * 1000;
-
-/** Characters Hono's bearerAuth accepts in a token (RFC 6750 token68). */
-export const VALID_TOKEN = /^[A-Za-z0-9._~+/-]+=*$/;
 
 // ---------- Middleware ----------
 
@@ -91,6 +78,10 @@ app.use('/api/*', async (c, next) => {
     // A token with other characters could never be sent as a valid Bearer token: say so instead of a silent 400.
     if (!VALID_TOKEN.test(token)) {
       return c.json({ error: 'API_TOKEN contains unsupported characters. Use only A-Z a-z 0-9 . _ ~ + / -' }, 500);
+    }
+    // One-click deploys make it easy to type something short; a guessable admin token is worse than none.
+    if (!isStrongToken(token)) {
+      return c.json({ error: `API_TOKEN is too weak. Use at least ${MIN_TOKEN_LENGTH} characters, e.g. a UUID.` }, 500);
     }
     return bearerAuth({ token })(c as unknown as Context, next);
   }
@@ -553,7 +544,28 @@ app.patch('/api/settings', async (c) => {
   return c.json<SettingsInfo>({ settings: next, limits: PLAN_LIMITS, usage });
 });
 
-// Non-API paths normally never reach the Worker (run_worker_first = /api/*), but hand them to the assets just in case.
+/**
+ * The dashboard is built before anyone knows its URL, so link-preview tags (og:image, …) carry a
+ * placeholder origin unless SITE_URL was set at build time. Swap in the real origin on the way out:
+ * one-click deploys get correct previews with no extra step.
+ */
+const PLACEHOLDER_ORIGIN = 'https://pingward-site.invalid';
+
+app.get('/', async (c) => {
+  const res = await c.env.ASSETS.fetch(c.req.raw);
+  if (!res.headers.get('Content-Type')?.includes('text/html')) return res;
+  const origin = new URL(c.req.url).origin;
+  return new HTMLRewriter()
+    .on(`meta[content^="${PLACEHOLDER_ORIGIN}"]`, {
+      element(el) {
+        const content = el.getAttribute('content');
+        if (content) el.setAttribute('content', origin + content.slice(PLACEHOLDER_ORIGIN.length));
+      },
+    })
+    .transform(res);
+});
+
+// Other non-API paths normally never reach the Worker (see run_worker_first), but hand them to the assets just in case.
 app.notFound((c) =>
   c.req.path.startsWith('/api/') ? c.json({ error: 'Not found' }, 404) : c.env.ASSETS.fetch(c.req.raw),
 );

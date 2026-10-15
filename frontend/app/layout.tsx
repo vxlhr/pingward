@@ -15,8 +15,8 @@ const geistMono = Geist_Mono({
 const description = "Serverless uptime monitoring on Cloudflare Workers + D1, with Discord alerts and a free-tier capacity model.";
 
 export const metadata: Metadata = {
-  // Link previews need absolute image URLs: set SITE_URL to the deployed address when building.
-  metadataBase: new URL(process.env.SITE_URL ?? "http://localhost:8787"),
+  // Link previews need absolute URLs. Without SITE_URL the Worker swaps this placeholder for the real origin.
+  metadataBase: new URL(process.env.SITE_URL ?? "https://pingward-site.invalid"),
   title: "PingWard",
   description,
   openGraph: { title: "PingWard", description, type: "website", siteName: "PingWard" },

@@ -1,0 +1,10 @@
+# Secrets for the Worker, in dotenv format. "Deploy to Cloudflare" asks for these on its setup page.
+# Locally: copy to .dev.vars (never commit it). In production: `npx wrangler secret put <NAME>`.
+
+# Admin token: signs you in to the dashboard and protects every write.
+# At least 16 characters; only letters, digits and - _ . ~ + /   (no ! @ # or spaces).
+# Example generator: node -e "console.log(crypto.randomUUID())"
+API_TOKEN=
+
+# Optional: Telegram alerts. Token from @BotFather, e.g. 123456789:AAE...
+# TELEGRAM_BOT_TOKEN=

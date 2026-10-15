@@ -9,21 +9,31 @@
     "frontend"
   ],
   "scripts": {
-    "dev:worker": "npm run dev -w worker",
+    "dev:worker": "node -e \"require('fs').mkdirSync('frontend/out',{recursive:true})\" && wrangler dev --test-scheduled --var ALLOWED_ORIGINS:http://localhost:3000 --var ALLOW_UNAUTHENTICATED_WRITES:true",
     "dev:frontend": "npm run dev -w frontend",
     "cron:local": "node worker/scripts/local-cron.mjs",
-    "db:init": "npm run db:migrate:local -w worker",
-    "db:init:remote": "npm run db:migrate:remote -w worker",
+    "db:init": "wrangler d1 migrations apply DB --local",
+    "db:init:remote": "wrangler d1 migrations apply DB --remote",
     "test": "npm test -w worker",
     "check": "npm run typecheck -w worker && npm test -w worker && npm run lint -w frontend && npm run build -w frontend",
     "build": "npm run build -w frontend",
-    "preview": "npm run build && npm run dev -w worker",
-    "deploy": "npm run build && npm run deploy -w worker"
+    "preview": "npm run build && npm run dev:worker",
+    "deploy": "npm run build && wrangler d1 migrations apply DB --remote && wrangler deploy"
   },
   "allowScripts": {
     "esbuild@0.28.2": true,
     "workerd@1.20261006.1": true,
     "unrs-resolver@1.12.2": true
   },
-  "license": "MIT"
+  "license": "MIT",
+  "cloudflare": {
+    "bindings": {
+      "API_TOKEN": {
+        "description": "Admin token for the dashboard and every write. At least 16 characters of letters, digits and - _ . ~ + / only (no !, @, # or spaces). A UUID works well."
+      },
+      "TELEGRAM_BOT_TOKEN": {
+        "description": "Optional. Bot token from @BotFather to enable Telegram alerts."
+      }
+    }
+  }
 }
