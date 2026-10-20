@@ -1,7 +1,7 @@
 <p align="center"><img src="docs/logo.svg" alt="PingWard" width="440"></p>
 
 **A serverless uptime monitor built entirely on the Cloudflare edge.**
-PingWard checks your websites and APIs on a schedule, records response times, draws latency charts, and pings your Discord channel the moment something goes down (or comes back up). No servers, no containers, no monthly bill: it runs on Cloudflare's free tier, and **one Worker serves both the dashboard and the API**.
+PingWard checks your websites and APIs on a schedule, records response times, draws latency charts, and alerts you on Discord or Telegram the moment something goes down (or comes back up). No servers to manage and no monthly bill: it runs on Cloudflare's free tier, and **one Worker serves both the dashboard and the API**. Prefer your own hardware? The same app ships as a Docker image.
 
 [![CI](https://github.com/vxlhr/pingward/actions/workflows/ci.yml/badge.svg)](https://github.com/vxlhr/pingward/actions/workflows/ci.yml)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6)
@@ -13,6 +13,19 @@ PingWard checks your websites and APIs on a schedule, records response times, dr
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/vxlhr/pingward)
 
 ![PingWard: live status cards for monitored services](docs/preview.png)
+
+## Quick start
+
+1. **Deploy.** Either click **Deploy to Cloudflare** above and set an `API_TOKEN` (16+ characters; a UUID works), or run it yourself with Docker:
+
+   ```bash
+   docker run -d -p 8787:8787 -e API_TOKEN=<16+ characters> -v pingward-data:/data ghcr.io/vxlhr/pingward
+   ```
+
+2. **Sign in.** Open your PingWard URL, click **Sign in** and paste the token.
+3. **Monitor.** Click **Add monitor**, enter your site's URL, and optionally a Discord webhook or Telegram chat for alerts.
+
+Details for every option are under [Deploy to your own Cloudflare account](#deploy-to-your-own-cloudflare-account-free).
 
 ---
 
