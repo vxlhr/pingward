@@ -35,5 +35,8 @@
         "description": "Optional. Bot token from @BotFather to enable Telegram alerts."
       }
     }
+  },
+  "overrides": {
+    "undici": "7.30.1"
   }
 }
