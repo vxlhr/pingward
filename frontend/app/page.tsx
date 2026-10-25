@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Activity, Eye, KeyRound, Lock, Plus, RefreshCw, Settings as SettingsIcon } from "lucide-react";
+import Link from "next/link";
+import { Activity, Eye, KeyRound, Lock, Plus, Radio, RefreshCw, Settings as SettingsIcon } from "lucide-react";
 import { api, ApiError, getToken, type HealthInfo, type Monitor, type SettingsInfo } from "@/lib/api";
 import { Button } from "@/components/ui";
 import { MonitorCard } from "@/components/monitor-card";
@@ -101,6 +102,12 @@ export default function Home() {
           <Button variant="ghost" onClick={() => load()} aria-label="Refresh">
             <RefreshCw className="size-4" />
           </Button>
+          <Link
+            href="/status"
+            className="inline-flex h-9 items-center gap-2 rounded-lg border border-border bg-surface px-3.5 text-sm font-medium transition-colors hover:bg-surface-2"
+          >
+            <Radio className="size-4" /> <span className="hidden sm:inline">Status page</span>
+          </Link>
           <Button variant="outline" onClick={() => setTokenOpen(true)}>
             <KeyRound className="size-4" /> <span className="hidden sm:inline">{hasToken ? "Token" : "Sign in"}</span>
           </Button>
@@ -201,7 +208,13 @@ export default function Home() {
       )}
       <TokenDialog open={tokenOpen} onClose={() => setTokenOpen(false)} onSaved={load} />
       {/* key: opening a different monitor starts the chart state fresh */}
-      <MonitorDetail key={selectedId ?? "none"} monitor={selected} canWrite={canWrite} onClose={() => setSelectedId(null)} />
+      <MonitorDetail
+        key={selectedId ?? "none"}
+        monitor={selected}
+        canWrite={canWrite}
+        onClose={() => setSelectedId(null)}
+        onChanged={load}
+      />
     </div>
   );
 }

@@ -12,7 +12,7 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-const description = "Serverless uptime monitoring on Cloudflare Workers + D1, with Discord alerts and a free-tier capacity model.";
+const description = "Serverless uptime monitoring on Cloudflare Workers + D1, with Discord and Telegram alerts, a public status page and a free-tier capacity model.";
 
 export const metadata: Metadata = {
   // Link previews need absolute URLs. Without SITE_URL the Worker swaps this placeholder for the real origin.

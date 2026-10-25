@@ -56,7 +56,16 @@ const STATUS_STYLES: Record<MonitorStatus, { label: string; cls: string }> = {
   PENDING: { label: "PENDING", cls: "bg-pending-soft text-pending" },
 };
 
-export function StatusBadge({ status }: { status: MonitorStatus }) {
+/** A monitor in a maintenance window shows that instead of its (frozen) status. */
+export function StatusBadge({ status, maintenance }: { status: MonitorStatus; maintenance?: boolean }) {
+  if (maintenance) {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-full bg-maintenance-soft px-2.5 py-1 text-xs font-semibold tracking-wide text-maintenance">
+        <span className="size-2 rounded-full bg-current" />
+        MAINTENANCE
+      </span>
+    );
+  }
   const s = STATUS_STYLES[status];
   return (
     <span className={clsx("inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold tracking-wide", s.cls)}>

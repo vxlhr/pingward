@@ -4,14 +4,14 @@ compatibility_date = "2026-10-01"
 compatibility_flags = ["nodejs_compat"]
 
 # The dashboard (Next.js static export) is served by this same Worker.
-# Only /api/* (and "/", to fill in link-preview URLs) runs Worker code; everything else is a
+# Only /api/* (and "/" + "/status", to fill in link-preview URLs) runs Worker code; everything else is a
 # static asset straight from the CDN. /__scheduled lets `wrangler dev --test-scheduled` trigger
 # the cron locally; in production it just falls through to the 404 page.
 [assets]
 directory = "frontend/out"
 binding = "ASSETS"
 not_found_handling = "404-page"
-run_worker_first = ["/api/*", "/__scheduled", "/"]
+run_worker_first = ["/api/*", "/__scheduled", "/", "/status"]
 
 # Runs every minute; the code decides which monitors are due.
 [triggers]

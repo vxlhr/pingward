@@ -16,6 +16,14 @@ export interface Monitor {
   telegram_chat_id: string | null;
   /** 1 = shown on the public dashboard, 0 = only signed-in admins see it. */
   is_public: number;
+  /** Failed checks in a row; the monitor turns DOWN at CONFIRM_FAILURES. */
+  fail_streak: number;
+  /** Status codes that count as UP, e.g. "200-299,401". null = any 2xx. */
+  accepted_status: string | null;
+  /** Text the response body must contain. null = the body isn't read. */
+  keyword: string | null;
+  /** Checks (and alerts) are paused until this time (unix ms). */
+  maintenance_until: number | null;
   user_id: string | null;
   created_at: number;
 }
@@ -57,6 +65,8 @@ export interface NewMonitor {
   telegram_chat_id?: string;
   /** Default true. */
   is_public?: boolean;
+  accepted_status?: string;
+  keyword?: string;
 }
 
 /**
@@ -70,6 +80,77 @@ export interface MonitorEdit {
   discord_webhook?: string | null;
   telegram_chat_id?: string | null;
   is_public?: boolean;
+  /** `null` or "" = back to the default (any 2xx / no keyword). */
+  accepted_status?: string | null;
+  keyword?: string | null;
+}
+
+// ---------- Check rules ----------
+
+/** Failed checks in a row before a monitor is DOWN (one blip never alerts). */
+export const CONFIRM_FAILURES = 2;
+/** How much of the body a keyword check reads. */
+export const KEYWORD_SCAN_BYTES = 64 * 1024;
+export const KEYWORD_MAX_LENGTH = 100;
+/** Longest maintenance window that can be set at once. */
+export const MAINTENANCE_MAX_MINUTES = 7 * 24 * 60;
+
+/**
+ * Parses "200-299, 301, 404" into ranges. Returns an error message for anything else
+ * (codes 100-599, at most 10 entries).
+ */
+export function parseAcceptedStatus(raw: string): [number, number][] | string {
+  const parts = raw.split(',').map((p) => p.trim()).filter(Boolean);
+  const error = 'accepted_status must be status codes or ranges between 100 and 599, e.g. "200-299, 401" (at most 10)';
+  if (parts.length === 0 || parts.length > 10) return error;
+  const ranges: [number, number][] = [];
+  for (const part of parts) {
+    const m = /^(\d{3})(?:\s*-\s*(\d{3}))?$/.exec(part);
+    if (!m) return error;
+    const from = Number(m[1]);
+    const to = Number(m[2] ?? m[1]);
+    if (from < 100 || to > 599 || from > to) return error;
+    ranges.push([from, to]);
+  }
+  return ranges;
+}
+
+export const isAccepted = (status: number, ranges: [number, number][]) => ranges.some(([a, b]) => status >= a && status <= b);
+
+/** Whether a maintenance window is active at `now`. */
+export const inMaintenance = (m: { maintenance_until: number | null }, now: number) =>
+  m.maintenance_until !== null && m.maintenance_until > now;
+
+// ---------- Charts & status page ----------
+
+export const STATS_RANGES = { '24h': 24, '7d': 7 * 24, '30d': 30 * 24 } as const;
+export type StatsRange = keyof typeof STATS_RANGES;
+
+/** GET /api/monitors/:id/stats?range=…: one point per hour. */
+export interface StatsPoint {
+  hour: number;
+  checks: number;
+  ok: number;
+  /** Average response time over the hour's checks (null = no checks). */
+  avg_ms: number | null;
+}
+
+/** GET /api/status: the public status page (public monitors only). */
+export interface StatusPage {
+  monitors: {
+    id: number;
+    name: string;
+    status: MonitorStatus;
+    maintenance_until: number | null;
+    /** Uptime over the days shown, null = no checks yet. */
+    uptime: number | null;
+    /** Oldest first; days without checks are absent. */
+    days: { day: number; checks: number; ok: number }[];
+  }[];
+  /** Recent incidents of the public monitors, newest first. */
+  incidents: (Incident & { monitor_name: string })[];
+  /** Number of days the bars cover. */
+  days: number;
 }
 
 export type AlertChannel = 'discord' | 'telegram';

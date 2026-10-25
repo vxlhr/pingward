@@ -7,6 +7,9 @@ import type {
   Ping,
   Settings,
   SettingsInfo,
+  StatsPoint,
+  StatsRange,
+  StatusPage,
   TelegramInfo,
   TestAlertResult,
 } from "@pingward/shared";
@@ -22,6 +25,9 @@ export type {
   Plan,
   Settings,
   SettingsInfo,
+  StatsPoint,
+  StatsRange,
+  StatusPage,
   TelegramInfo,
   TestAlertResult,
 } from "@pingward/shared";
@@ -87,6 +93,11 @@ export const api = {
     request<Monitor>(`/api/monitors/${id}`, { method: "PATCH", body: JSON.stringify({ paused }) }),
   editMonitor: (id: number, edit: MonitorEdit) =>
     request<Monitor>(`/api/monitors/${id}`, { method: "PATCH", body: JSON.stringify(edit) }),
+  /** 0 ends the maintenance window. */
+  setMaintenance: (id: number, minutes: number) =>
+    request<Monitor>(`/api/monitors/${id}`, { method: "PATCH", body: JSON.stringify({ maintenance_minutes: minutes }) }),
+  getStats: (id: number, range: StatsRange) => request<StatsPoint[]>(`/api/monitors/${id}/stats?range=${range}`),
+  getStatus: () => request<StatusPage>("/api/status"),
   /** Per-channel results; a 502 (some channel failed) still carries them, so it isn't thrown. */
   testAlert: (id: number) =>
     request<TestAlertResult>(`/api/monitors/${id}/test-alert`, { method: "POST" }).catch((e: unknown) => {

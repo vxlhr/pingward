@@ -1,6 +1,14 @@
-import { D1_CALLS_PER_RUN, MAX_REDIRECTS, PLAN_LIMITS } from '@pingward/shared';
-import type { CheckResult, Env, Monitor, MonitorStatus } from './types';
-import { SubrequestBudget, planAlerts, sendAlerts } from './alerts';
+import {
+  D1_CALLS_PER_RUN,
+  KEYWORD_SCAN_BYTES,
+  MAX_REDIRECTS,
+  PLAN_LIMITS,
+  inMaintenance,
+  isAccepted,
+  parseAcceptedStatus,
+} from '@pingward/shared';
+import type { CheckResult, Env, Monitor } from './types';
+import { SubrequestBudget, nextState, planAlerts, sendAlerts } from './alerts';
 import { SELECT_SETTINGS_SQL, settingsFromRows } from './settings';
 import { checkTargetUrl } from './validation';
 
@@ -11,20 +19,50 @@ const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 const STATS_RETENTION_MS = 30 * DAY_MS;
 const INCIDENT_RETENTION_MS = 90 * DAY_MS;
+/** The status page shows 90 daily bars. */
+const DAILY_STATS_RETENTION_MS = 90 * DAY_MS;
 
-/** Returns up to `limit` monitors that are due (or never checked), longest-waiting first. */
+/** Failed once but not DOWN yet: re-checked after a minute to confirm or clear the failure. */
+const isSuspect = (m: Monitor) => m.fail_streak > 0 && m.status !== 'DOWN';
+
+/**
+ * Returns up to `limit` monitors that are due (or never checked). Monitors waiting to confirm
+ * a failure go first, then the longest-waiting. Paused and in-maintenance monitors are skipped.
+ */
 export function selectDueMonitors(monitors: Monitor[], now: number, limit: number): Monitor[] {
   return monitors
-    .filter((m) => m.status !== 'PAUSED')
-    .filter((m) => m.last_checked_at === null || now - m.last_checked_at >= m.interval_minutes * 60_000 - 5_000)
-    .sort((a, b) => (a.last_checked_at ?? 0) - (b.last_checked_at ?? 0))
+    .filter((m) => m.status !== 'PAUSED' && !inMaintenance(m, now))
+    .filter((m) => {
+      if (m.last_checked_at === null) return true;
+      const wait = isSuspect(m) ? 1 : m.interval_minutes;
+      return now - m.last_checked_at >= wait * 60_000 - 5_000;
+    })
+    .sort((a, b) => Number(isSuspect(b)) - Number(isSuspect(a)) || (a.last_checked_at ?? 0) - (b.last_checked_at ?? 0))
     .slice(0, limit);
+}
+
+/** Reads at most `max` bytes of a body as text, then releases the connection. */
+async function readHead(res: Response, max: number): Promise<string> {
+  const reader = res.body?.getReader();
+  if (!reader) return '';
+  const bytes = new Uint8Array(max);
+  let size = 0;
+  while (size < max) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const part = value.subarray(0, max - size);
+    bytes.set(part, size);
+    size += part.byteLength;
+  }
+  await reader.cancel().catch(() => {});
+  return new TextDecoder().decode(bytes.subarray(0, size));
 }
 
 /**
  * GETs the monitor URL, following redirects by hand so every hop is re-validated
  * (a public URL must not be able to bounce the check to a private address).
- * Every hop is one subrequest, taken from `budget`.
+ * Every hop is one subrequest, taken from `budget`. The final response is UP when its status is
+ * accepted (any 2xx by default) and, if a keyword is set, the first 64 KB of the body contain it.
  */
 export async function checkMonitor(monitor: Monitor, budget = new SubrequestBudget(Infinity)): Promise<CheckResult> {
   const started = Date.now();
@@ -48,11 +86,9 @@ export async function checkMonitor(monitor: Monitor, budget = new SubrequestBudg
         signal,
         headers: { 'User-Agent': 'PingWard/1.0 (+https://github.com/vxlhr/pingward)' },
       });
-      // We don't need the body; release the connection right away.
-      await res.body?.cancel();
-
       const location = res.status >= 300 && res.status < 400 ? res.headers.get('Location') : null;
       if (location) {
+        await res.body?.cancel();
         if (hop >= MAX_REDIRECTS) return fail(`Too many redirects (> ${MAX_REDIRECTS})`, res.status);
         const next = new URL(location, url).toString();
         const blocked = checkTargetUrl(next);
@@ -61,12 +97,21 @@ export async function checkMonitor(monitor: Monitor, budget = new SubrequestBudg
         continue;
       }
 
+      const ranges = monitor.accepted_status ? parseAcceptedStatus(monitor.accepted_status) : null;
+      const accepted = Array.isArray(ranges) ? isAccepted(res.status, ranges) : res.ok;
+      if (!accepted || !monitor.keyword) {
+        // No body needed: release the connection right away.
+        await res.body?.cancel();
+        if (!accepted) return fail(`HTTP ${res.status}`, res.status);
+      } else if (!(await readHead(res, KEYWORD_SCAN_BYTES)).includes(monitor.keyword)) {
+        return fail(`Keyword not found: "${monitor.keyword}"`, res.status);
+      }
       return {
         monitor,
-        ok: res.ok,
+        ok: true,
         statusCode: res.status,
         responseTimeMs: Date.now() - started,
-        error: res.ok ? null : `HTTP ${res.status}`,
+        error: null,
         checkedAt: Date.now(),
       };
     }
@@ -110,21 +155,23 @@ export async function runScheduledChecks(env: Env, scheduledTime: number, budget
   for (const r of results) {
     const id = r.monitor.id;
     const prev = r.monitor.status;
-    const newStatus: MonitorStatus = r.ok ? 'UP' : 'DOWN';
+    const next = nextState(r.monitor, r.ok);
     const hour = Math.floor(r.checkedAt / HOUR_MS) * HOUR_MS;
 
     // Incidents go first: their guards must see the status from before this check,
     // so a monitor paused mid-check neither opens nor closes one.
-    if (!r.ok && prev !== 'DOWN') {
+    if (next.status === 'DOWN' && prev !== 'DOWN') {
+      // The outage began at the first failed check: the previous one, when this check confirms it.
+      const startedAt = r.monitor.fail_streak > 0 ? (r.monitor.last_checked_at ?? r.checkedAt) : r.checkedAt;
       statements.push(
         env.DB.prepare(
           `INSERT INTO incidents (monitor_id, started_at, cause)
            SELECT ?1, ?2, ?3
            WHERE EXISTS (SELECT 1 FROM monitors WHERE id = ?1 AND status != 'PAUSED')
              AND NOT EXISTS (SELECT 1 FROM incidents WHERE monitor_id = ?1 AND ended_at IS NULL)`,
-        ).bind(id, r.checkedAt, r.error),
+        ).bind(id, startedAt, r.error),
       );
-    } else if (r.ok && prev !== 'UP') {
+    } else if (next.status === 'UP' && prev !== 'UP') {
       statements.push(
         env.DB.prepare(
           `UPDATE incidents SET ended_at = ?2 WHERE monitor_id = ?1 AND ended_at IS NULL
@@ -143,16 +190,17 @@ export async function runScheduledChecks(env: Env, scheduledTime: number, budget
     updateIndex.push(statements.length);
     statements.push(
       env.DB.prepare(
-        `UPDATE monitors SET status = ?, last_checked_at = ?, last_response_time_ms = ?
+        `UPDATE monitors SET status = ?, fail_streak = ?, last_checked_at = ?, last_response_time_ms = ?
          WHERE id = ? AND status != 'PAUSED'`,
-      ).bind(newStatus, r.checkedAt, r.responseTimeMs, id),
+      ).bind(next.status, next.failStreak, r.checkedAt, r.responseTimeMs, id),
     );
     statements.push(
       env.DB.prepare(
-        `INSERT INTO ping_stats_hourly (monitor_id, hour, checks, ok)
-         SELECT ?1, ?2, 1, ?3 WHERE EXISTS (SELECT 1 FROM monitors WHERE id = ?1)
-         ON CONFLICT (monitor_id, hour) DO UPDATE SET checks = checks + 1, ok = ok + excluded.ok`,
-      ).bind(id, hour, r.ok ? 1 : 0),
+        `INSERT INTO ping_stats_hourly (monitor_id, hour, checks, ok, response_ms_sum)
+         SELECT ?1, ?2, 1, ?3, ?4 WHERE EXISTS (SELECT 1 FROM monitors WHERE id = ?1)
+         ON CONFLICT (monitor_id, hour) DO UPDATE SET
+           checks = checks + 1, ok = ok + excluded.ok, response_ms_sum = response_ms_sum + excluded.response_ms_sum`,
+      ).bind(id, hour, r.ok ? 1 : 0, r.responseTimeMs),
     );
   }
   const written = statements.length > 0 ? await env.DB.batch(statements) : [];
@@ -165,11 +213,23 @@ export async function runScheduledChecks(env: Env, scheduledTime: number, budget
   return results;
 }
 
-/** Deletes old pings, hourly stats and long-closed incidents to keep D1 small. */
+/**
+ * Hourly housekeeping: rolls the hourly counters up into daily ones (for the status page),
+ * then deletes old pings, stats and long-closed incidents to keep D1 small.
+ */
 export async function pruneOldData(env: Env, now: number): Promise<void> {
   const [settingsRes] = await env.DB.batch([env.DB.prepare(SELECT_SETTINGS_SQL)]);
   const { pingRetentionDays } = settingsFromRows(settingsRes.results as { key: string; value: string }[]);
+  // From the start of the day an hour ago: right after midnight this also completes yesterday.
+  const rollupFrom = Math.floor((now - HOUR_MS) / DAY_MS) * DAY_MS;
   await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO ping_stats_daily (monitor_id, day, checks, ok)
+       SELECT monitor_id, (hour / ${DAY_MS}) * ${DAY_MS} AS d, SUM(checks), SUM(ok)
+       FROM ping_stats_hourly WHERE hour >= ? GROUP BY monitor_id, d
+       ON CONFLICT (monitor_id, day) DO UPDATE SET checks = excluded.checks, ok = excluded.ok`,
+    ).bind(rollupFrom),
+    env.DB.prepare('DELETE FROM ping_stats_daily WHERE day < ?').bind(now - DAILY_STATS_RETENTION_MS),
     env.DB.prepare('DELETE FROM pings WHERE created_at < ?').bind(now - pingRetentionDays * DAY_MS),
     env.DB.prepare('DELETE FROM ping_stats_hourly WHERE hour < ?').bind(now - STATS_RETENTION_MS),
     env.DB.prepare('DELETE FROM incidents WHERE ended_at < ?').bind(now - INCIDENT_RETENTION_MS),

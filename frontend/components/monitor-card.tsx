@@ -2,6 +2,7 @@
 
 import { Bell, Lock, Pause, Pencil, Play, Trash2 } from "lucide-react";
 import { clsx } from "clsx";
+import { inMaintenance } from "@pingward/shared";
 import { formatDuration, timeAgo, type Monitor } from "@/lib/api";
 import { useNow } from "@/lib/use-now";
 import { Button, StatusBadge } from "./ui";
@@ -22,6 +23,8 @@ export function MonitorCard({
   onDelete: () => void;
 }) {
   const now = useNow();
+  // now is 0 during the static prerender; nothing is rendered from data until the client loads.
+  const maintenance = now > 0 && inMaintenance(monitor, now);
   const host = (() => {
     try {
       return new URL(monitor.url).host;
@@ -39,9 +42,17 @@ export function MonitorCard({
     >
       <div className="flex items-start justify-between gap-3">
         <span className="flex items-center gap-2">
-          <StatusBadge status={monitor.status} />
-          {monitor.down_since && (
+          <StatusBadge status={monitor.status} maintenance={maintenance} />
+          {maintenance && monitor.maintenance_until && (
+            <span className="text-xs text-muted tabular-nums">for {formatDuration(monitor.maintenance_until - now)}</span>
+          )}
+          {!maintenance && monitor.down_since && (
             <span className="text-xs text-down tabular-nums">for {formatDuration(now - monitor.down_since)}</span>
+          )}
+          {!maintenance && monitor.fail_streak > 0 && monitor.status !== "DOWN" && monitor.status !== "PAUSED" && (
+            <span className="text-xs text-pending" title="The last check failed. It is checked again within a minute before anyone is alerted.">
+              re-checking…
+            </span>
           )}
         </span>
         {!monitor.is_public && (

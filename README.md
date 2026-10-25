@@ -35,10 +35,14 @@ Details for every option are under [Deploy to your own Cloudflare account](#depl
 - **One Worker, one deploy, one origin.** The Next.js dashboard is shipped as Workers Static Assets next to the API. There's no separate frontend host, and no CORS in production.
 - **Global Cron Triggers.** A cron fires every minute. Each monitor has its own interval (1–1440 min), and the Worker decides which ones are due.
 - **Parallel checks.** Due monitors are fetched concurrently with `Promise.allSettled`, each with a 10 s timeout. Results are written in a single atomic D1 `batch()`.
+- **No alerts for a single blip.** A failed check is re-run a minute later, and a monitor only turns DOWN (incident and alert) after 2 failures in a row. One success brings it back UP.
+- **Content checks.** Optionally accept other status codes (e.g. `200-299, 401`) and require a keyword on the page, so a "200 OK" error page still counts as down.
+- **Maintenance windows.** Pause checks and alerts for 1, 4, or 24 hours from the dashboard. Planned downtime doesn't count against uptime, and the monitor resumes on its own.
+- **Public status page.** `/status` shows every public monitor with 90 daily uptime bars and recent incidents, like the status pages of big services.
 - **Discord and Telegram alerts.** When a monitor goes UP → DOWN or DOWN → UP, PingWard posts to that monitor's Discord webhook and/or Telegram chat (status code, latency, error). A **Send test alert** button checks every channel before a real outage does. A **Find my chat** helper picks your Telegram chat ID for you.
 - **Public or private, per monitor.** Private monitors are checked and alert as usual, but only appear after you sign in. Your own sites stay off the public demo, which can show well-known services instead.
 - **Incident history.** Every outage is recorded with its start, end, duration, and first error. Cards show how long a site has been down.
-- **Latency dashboard.** Live status cards, 24 h uptime, a Recharts response-time chart, and a status history strip. Monitors can be added, edited, paused, and deleted from the dashboard.
+- **Latency dashboard.** Live status cards, uptime, a Recharts response-time chart (recent checks, or hourly averages over 24 h / 7 d / 30 d), and a status history strip. Monitors can be added, edited, paused, and deleted from the dashboard.
 - **Secure by default.** Writes fail closed: without an `API_TOKEN` secret, production refuses them. Reads are public, or private with `READ_PROTECTED`. There's per-IP rate limiting, and private/internal targets are blocked (SSRF guard). Webhook URLs never leave the server. A strict CSP and security headers ship on every page. See [Security model](#security-model).
 - **Self-cleaning.** Ping history older than 7 days is pruned hourly, so D1 stays small.
 - **Free-tier aware.** An explicit capacity model keeps subrequests and D1 reads and writes under Cloudflare's free limits. Capacity is adjustable from the dashboard's Settings window, with no redeploy.
@@ -76,10 +80,11 @@ flowchart LR
 ### How a check works
 
 1. Cron fires → `scheduled()` loads the settings and every monitor that isn't `PAUSED`, in one D1 batch.
-2. `selectDueMonitors()` keeps those whose `last_checked_at + interval` has passed, oldest first, up to the configured **check capacity** (see [Capacity model](#capacity-model)).
-3. Each URL is fetched in parallel. Redirects are followed by hand (at most 3) and every hop is re-validated. `2xx` = **UP**; any other status, a network error, or a timeout = **DOWN**.
-4. One D1 batch inserts the ping, updates the monitor (status, last check, latency), and bumps an hourly uptime counter.
-5. Monitors whose status changed get a Discord embed and/or a Telegram message. Outages go first, and every alert is paid for from the run's subrequest budget. Monitors paused or deleted while their check was running are skipped.
+2. `selectDueMonitors()` keeps those whose `last_checked_at + interval` has passed, up to the configured **check capacity** (see [Capacity model](#capacity-model)). Monitors in a maintenance window are skipped. A monitor whose last check failed is due again after one minute and goes first.
+3. Each URL is fetched in parallel. Redirects are followed by hand (at most 3) and every hop is re-validated. The final response is **OK** when its status is accepted (any `2xx` by default) and, if the monitor has a keyword, the first 64 KB of the body contain it. Anything else, a network error, or a timeout is a **failure**.
+4. A failure only turns the monitor **DOWN** once it has failed twice in a row; the first one just raises its `fail_streak`. A success sets it **UP**.
+5. One D1 batch inserts the ping, updates the monitor (status, fail streak, last check, latency), and bumps an hourly counter (checks, successes, total response time).
+6. Monitors whose status changed get a Discord embed and/or a Telegram message. Outages go first, and every alert is paid for from the run's subrequest budget. Monitors paused or deleted while their check was running are skipped.
 
 ### Capacity model
 
@@ -90,8 +95,8 @@ PingWard budgets for this explicitly:
 - **Check capacity** = checks per cron run (every minute). A monitor needs `1 / interval` of it, so capacity 7 covers 7 sites every minute, 35 every 5 minutes, or any mix. Adding or resuming a monitor that doesn't fit is refused with a hint (e.g. "use an interval of 3 minutes or more").
 - **Subrequests, worst case per run on the free plan:** 7 checks × 4 hops (1 + 3 redirects) + 4 D1 calls (read, write, hourly prune) + 7 Discord + 7 Telegram alerts = **46** (limit 50). That's every site redirecting three times and every monitor going down at once with both channels, and a test runs exactly that scenario.
 - **Second lock:** each run also counts its subrequests as it goes (`SubrequestBudget`) and never starts one that wouldn't fit. If a future change ever broke the math above, alerts would be skipped and logged rather than the run failing.
-- **D1 writes:** about 6 rows per check (ping and its index, monitor row, hourly counter, later pruning). Full capacity is about **60k rows/day** (limit 100k). Alerts and incidents only write on status changes.
-- The dashboard reads uptime from **hourly counters** (≤ 25 rows per monitor) instead of every ping, polls once a minute, and only while the tab is visible.
+- **D1 writes:** about 6 rows per check (ping and its index, monitor row, hourly counter, later pruning). Full capacity is about **60k rows/day** (limit 100k). Alerts and incidents only write on status changes. Confirming a failure is just another check, so it also comes out of the check capacity. Daily counters for the status page are rolled up from the hourly ones once an hour (≈ 1 row per monitor per hour), so checks themselves write nothing extra.
+- The dashboard reads uptime from **hourly counters** (≤ 25 rows per monitor) instead of every ping, polls once a minute, and only while the tab is visible. The status page reads ≤ 90 daily rows plus today's hourly rows per public monitor, and browsers cache it for a minute.
 
 Capacity, plan, and ping retention are edited in the dashboard's **Settings** window and stored in D1, so changing them doesn't need a redeploy. Each plan has a hard ceiling in code (`PLAN_LIMITS`): free = 7 checks/min and 50 monitors; paid ($5/month Workers plan) = 100 checks/min and 500 monitors. The Settings window shows the worst-case subrequest count live as you change the capacity. A setting can't be lowered below what the active monitors already need.
 
@@ -132,8 +137,10 @@ pingward/
 | `GET` | `/api/monitors` | – ¹ ² | All monitors with status, last latency, 24 h uptime |
 | `GET` | `/api/monitors/:id` | – ¹ ² | Single monitor |
 | `GET` | `/api/monitors/:id/pings?limit=50` | – ¹ ² | Recent pings, oldest → newest (max 500) |
-| `POST` | `/api/monitors` | Bearer | Create `{ url, name, interval_minutes, discord_webhook?, telegram_chat_id?, is_public? }`. Returns 409 if it doesn't fit the check capacity or the plan's monitor cap |
-| `PATCH` | `/api/monitors/:id` | Bearer | Edit `{ name?, url?, interval_minutes?, discord_webhook?, telegram_chat_id?, is_public? }` (`null` removes an alert channel), or pause/resume `{ paused: boolean }`. Returns 409 if a shorter interval or a resume doesn't fit the capacity |
+| `GET` | `/api/monitors/:id/stats?range=24h` | – ¹ ² | Hourly checks, successes and average response time; `range` is `24h`, `7d` or `30d` |
+| `GET` | `/api/status` | – ¹ | Status page data: public monitors with 90 daily uptime bars, and their incidents from the last 14 days |
+| `POST` | `/api/monitors` | Bearer | Create `{ url, name, interval_minutes, discord_webhook?, telegram_chat_id?, is_public?, accepted_status?, keyword? }`. Returns 409 if it doesn't fit the check capacity or the plan's monitor cap |
+| `PATCH` | `/api/monitors/:id` | Bearer | Edit `{ name?, url?, interval_minutes?, discord_webhook?, telegram_chat_id?, is_public?, accepted_status?, keyword? }` (`null` removes an alert channel or a check rule), pause/resume `{ paused: boolean }`, or start/end maintenance `{ maintenance_minutes: 0–10080 }` (0 ends it). Returns 409 if a shorter interval or a resume doesn't fit the capacity |
 | `POST` | `/api/monitors/:id/test-alert` | Bearer | Send a test message to every alert channel; returns one result per channel |
 | `GET` | `/api/telegram` | Bearer | Bot status and the chats that recently messaged it (to pick a chat ID) |
 | `GET` | `/api/monitors/:id/incidents?limit=20` | – ¹ ² | Outage history, newest first (max 100) |
@@ -352,16 +359,19 @@ PingWard sends an HTTP `GET` to each target as often as once a minute, with the 
 
 - See the [Capacity model](#capacity-model) for how the free Workers and D1 limits are budgeted.
 - Static asset requests are free and unlimited, and they don't use up your Worker request quota.
-- Raw pings are pruned after the configured retention (default 7 days), and hourly uptime counters after 30 days.
+- Raw pings are pruned after the configured retention (default 7 days), hourly counters after 30 days, and daily counters (status page) after 90 days.
 
 ## Roadmap
 
 - [x] Edit monitors, test alerts, incident history
 - [x] Telegram alerts with a chat-ID finder
-- [ ] Accepted status codes and keyword / JSON assertions
+- [x] Confirm failures before alerting (no alerts for a single blip)
+- [x] Accepted status codes and keyword checks
+- [x] Chart time ranges (24 h / 7 d / 30 d from the hourly counters)
+- [x] Public status page with 90-day uptime bars
+- [x] Maintenance windows
+- [ ] JSON assertions
 - [ ] SSL certificate expiry warnings
-- [ ] Chart time ranges (1 h / 24 h / 7 d from the hourly counters)
-- [ ] Public status pages
 - [ ] Multi-user accounts (`user_id` is already in the schema)
 - [ ] Slack and e-mail notifications
 

@@ -1,5 +1,5 @@
-import type { AlertChannel } from '@pingward/shared';
-import type { CheckResult, Env } from './types';
+import { CONFIRM_FAILURES, type AlertChannel } from '@pingward/shared';
+import type { CheckResult, Env, Monitor, MonitorStatus } from './types';
 import { buildDiscordPayload, sendDiscord } from './discord';
 import { TELEGRAM_BOT_TOKEN, buildTelegramMessage, sendTelegram } from './telegram';
 
@@ -27,12 +27,27 @@ export class SubrequestBudget {
   }
 }
 
+/**
+ * Status after a check. One success is enough to be UP; a failure only turns the monitor DOWN
+ * once it has failed CONFIRM_FAILURES times in a row (until then it keeps its status).
+ */
+export function nextState(
+  m: Pick<Monitor, 'status' | 'fail_streak'>,
+  ok: boolean,
+): { status: MonitorStatus; failStreak: number } {
+  if (ok) return { status: 'UP', failStreak: 0 };
+  const failStreak = m.fail_streak + 1;
+  if (m.status === 'DOWN' || failStreak >= CONFIRM_FAILURES) return { status: 'DOWN', failStreak };
+  return { status: m.status, failStreak };
+}
+
 /** Should this result notify? UP↔DOWN changes, and the first check only when it's an outage. */
 export function isAlertWorthy(r: CheckResult): boolean {
   const prev = r.monitor.status;
-  const next = r.ok ? 'UP' : 'DOWN';
+  const next = nextState(r.monitor, r.ok).status;
+  if (prev === next) return false;
   if (prev === 'PENDING') return next === 'DOWN';
-  return prev !== next;
+  return true;
 }
 
 interface Alert {

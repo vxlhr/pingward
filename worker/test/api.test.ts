@@ -140,6 +140,8 @@ describe('editing a monitor', () => {
     created_at: 0,
     discord_webhook: null,
     telegram_chat_id: null,
+    accepted_status: null,
+    keyword: null,
   };
 
   /** first() answers in order: the SELECT of the existing row, then the guarded UPDATE ... RETURNING. */
@@ -184,6 +186,125 @@ describe('editing a monitor', () => {
   it('rejects mixing edits with pause', async () => {
     const res = await app.request('/api/monitors/1', send('PATCH', { name: 'x', paused: true }), env());
     expect(res.status).toBe(400);
+  });
+});
+
+/** DB stub that records every statement and answers batch() / all() from the given handlers. */
+function recordingEnv(answers: { batch?: (sql: string[]) => unknown[]; first?: unknown; all?: unknown[] } = {}) {
+  const statements: { sql: string; args: unknown[] }[] = [];
+  const prepare = (sql: string) => {
+    const s = {
+      sql,
+      args: [] as unknown[],
+      bind: (...a: unknown[]) => ((s.args = a), s),
+      first: async () => answers.first ?? null,
+      all: async () => ({ results: answers.all ?? [] }),
+    };
+    statements.push(s);
+    return s;
+  };
+  const batch = vi.fn(async (list: { sql: string }[]) =>
+    answers.batch ? answers.batch(list.map((s) => s.sql)) : list.map(() => ({ results: [], meta: { changes: 1 } })),
+  );
+  return { env: env({ DB: { prepare, batch } as unknown as D1Database }), statements, batch };
+}
+
+describe('check rules', () => {
+  it('rejects malformed accepted status codes and keywords', async () => {
+    for (const body of [
+      { accepted_status: '2xx' },
+      { accepted_status: '99' },
+      { accepted_status: '300-200' },
+      { keyword: 'x'.repeat(101) },
+      { keyword: '   ' },
+      { keyword: 5 },
+    ]) {
+      const res = await app.request('/api/monitors', post({ ...valid, ...body }), env());
+      expect(res.status, JSON.stringify(body)).toBe(400);
+    }
+  });
+
+  it('stores normalised status codes and the keyword as given', async () => {
+    const { env: e, statements } = recordingEnv({ first: { ...valid, id: 1, is_public: 1 } });
+    // settings + usage come from batch(); the INSERT is the prepared statement with 10 args.
+    (e.DB as unknown as { batch: unknown }).batch = async () => [{ results: [] }, { results: [{ load: 0, monitors: 0 }] }];
+    const res = await app.request('/api/monitors', post({ ...valid, accepted_status: ' 200-299 , 401,401 ', keyword: ' Welcome' }), e);
+    expect(res.status).toBe(201);
+    const insert = statements.find((s) => s.sql.includes('INSERT INTO monitors'));
+    expect(insert?.args.slice(8)).toEqual(['200-299,401,401', ' Welcome']);
+  });
+});
+
+describe('maintenance window', () => {
+  it('validates the duration and refuses mixing it with other changes', async () => {
+    for (const body of [{ maintenance_minutes: -1 }, { maintenance_minutes: 7 * 1440 + 1 }, { maintenance_minutes: '60' }, { maintenance_minutes: 60, paused: true }]) {
+      const res = await app.request('/api/monitors/1', send('PATCH', body), env());
+      expect(res.status, JSON.stringify(body)).toBe(400);
+    }
+  });
+
+  it('starts one: closes the ongoing incident and resets the status', async () => {
+    const until = Date.now() + 60 * 60_000;
+    const { env: e, batch } = recordingEnv({
+      batch: () => [{ results: [] }, { results: [{ id: 1, name: 'A', status: 'PENDING', is_public: 1, maintenance_until: until, discord_webhook: null, telegram_chat_id: null }] }],
+    });
+    const res = await app.request('/api/monitors/1', send('PATCH', { maintenance_minutes: 60 }), e);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { maintenance_until: number }).maintenance_until).toBe(until);
+    const [closeIncident, update] = batch.mock.calls[0][0] as unknown as { sql: string; args: unknown[] }[];
+    expect(closeIncident.sql).toContain('UPDATE incidents');
+    expect(closeIncident.args[2]).toBe(60);
+    expect(update.sql).toContain("'PENDING'");
+  });
+
+  it('404s for an unknown monitor', async () => {
+    const { env: e } = recordingEnv({ batch: () => [{ results: [] }, { results: [] }] });
+    const res = await app.request('/api/monitors/9', send('PATCH', { maintenance_minutes: 0 }), e);
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('stats and status page', () => {
+  it('validates the chart range', async () => {
+    const res = await app.request('/api/monitors/1/stats?range=1y', {}, env());
+    expect(res.status).toBe(400);
+  });
+
+  it('returns hourly points with the average response time', async () => {
+    const { env: e } = recordingEnv({
+      all: [
+        { hour: 0, checks: 4, ok: 3, response_ms_sum: 400 },
+        { hour: 3_600_000, checks: 2, ok: 2, response_ms_sum: 0 }, // recorded before response times were kept
+      ],
+    });
+    const res = await app.request('/api/monitors/1/stats?range=7d', {}, e);
+    expect(await res.json()).toEqual([
+      { hour: 0, checks: 4, ok: 3, avg_ms: 100 },
+      { hour: 3_600_000, checks: 2, ok: 2, avg_ms: null },
+    ]);
+  });
+
+  it('builds the public status page from public monitors only, with today from the live counters', async () => {
+    const today = Math.floor(Date.now() / 86_400_000) * 86_400_000;
+    const { env: e, batch } = recordingEnv({
+      batch: () => [
+        { results: [{ id: 1, name: 'API', status: 'UP', maintenance_until: null }, { id: 2, name: 'New', status: 'PENDING', maintenance_until: null }] },
+        { results: [{ monitor_id: 1, day: today - 86_400_000, checks: 1440, ok: 1440 }] },
+        { results: [{ monitor_id: 1, checks: 60, ok: 30 }] },
+        { results: [{ id: 7, monitor_id: 1, started_at: today, ended_at: null, cause: 'HTTP 503', monitor_name: 'API' }] },
+      ],
+    });
+    const res = await app.request('/api/status', {}, e);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Cache-Control')).toBe('public, max-age=60');
+    const page = (await res.json()) as { monitors: { uptime: number | null; days: { day: number }[] }[]; incidents: unknown[]; days: number };
+    expect(page.days).toBe(90);
+    expect(page.monitors[0].days.map((d) => d.day)).toEqual([today - 86_400_000, today]);
+    expect(page.monitors[0].uptime).toBe(98); // 1470 of 1500
+    expect(page.monitors[1]).toMatchObject({ uptime: null, days: [] });
+    expect(page.incidents).toHaveLength(1);
+    // Every query is limited to public monitors.
+    for (const s of batch.mock.calls[0][0] as unknown as { sql: string }[]) expect(s.sql).toContain('is_public = 1');
   });
 });
 

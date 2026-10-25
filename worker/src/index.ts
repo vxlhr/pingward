@@ -3,12 +3,19 @@ import { cors } from 'hono/cors';
 import { bearerAuth } from 'hono/bearer-auth';
 import { HTTPException } from 'hono/http-exception';
 import {
+  KEYWORD_MAX_LENGTH,
+  MAINTENANCE_MAX_MINUTES,
   PLAN_LIMITS,
+  STATS_RANGES,
   loadOf,
+  parseAcceptedStatus,
   type HealthInfo,
   type Incident,
   type Settings,
   type SettingsInfo,
+  type StatsPoint,
+  type StatsRange,
+  type StatusPage,
   type TestAlertResult,
 } from '@pingward/shared';
 import type { Env, Monitor, MonitorSummary, Ping } from './types';
@@ -101,6 +108,35 @@ interface MonitorInput {
   discord_webhook: string | null;
   telegram_chat_id: string | null;
   is_public: boolean;
+  accepted_status: string | null;
+  keyword: string | null;
+}
+
+/**
+ * Validates the optional check rules. Leaving a field out keeps it (undefined);
+ * `null` or "" resets it to the default (null).
+ */
+function parseCheckRules(b: Record<string, unknown>, errors: string[]) {
+  const rules: { accepted_status?: string | null; keyword?: string | null } = {};
+  if (b.accepted_status !== undefined) {
+    const raw = typeof b.accepted_status === 'string' ? b.accepted_status.trim() : b.accepted_status;
+    if (raw === null || raw === '') rules.accepted_status = null;
+    else if (typeof raw !== 'string') errors.push('accepted_status must be a string such as "200-299, 401"');
+    else {
+      const parsed = parseAcceptedStatus(raw);
+      if (typeof parsed === 'string') errors.push(parsed);
+      else rules.accepted_status = parsed.map(([a, z]) => (a === z ? `${a}` : `${a}-${z}`)).join(',');
+    }
+  }
+  if (b.keyword !== undefined) {
+    // Not trimmed: leading/trailing spaces can be part of what must appear on the page.
+    const raw = b.keyword;
+    if (raw === null || raw === '') rules.keyword = null;
+    else if (typeof raw !== 'string' || raw.length > KEYWORD_MAX_LENGTH || !raw.trim()) {
+      errors.push(`keyword must be 1-${KEYWORD_MAX_LENGTH} characters`);
+    } else rules.keyword = raw;
+  }
+  return rules;
 }
 
 const isTelegramChatId = (v: string) => TELEGRAM_CHAT_ID.test(v);
@@ -132,6 +168,7 @@ function parseMonitorInput(body: unknown, botToken?: string): MonitorInput {
   else if (rawChat && isBotItself(rawChat, botToken)) errors.push(TELEGRAM_BOT_CHAT_ERROR);
 
   if (b.is_public !== undefined && typeof b.is_public !== 'boolean') errors.push('is_public must be true or false');
+  const rules = parseCheckRules(b, errors);
 
   if (errors.length) throw new HTTPException(400, { message: errors.join('; ') });
   return {
@@ -141,6 +178,8 @@ function parseMonitorInput(body: unknown, botToken?: string): MonitorInput {
     discord_webhook: rawHook || null,
     telegram_chat_id: rawChat || null,
     is_public: b.is_public !== false,
+    accepted_status: rules.accepted_status ?? null,
+    keyword: rules.keyword ?? null,
   };
 }
 
@@ -180,6 +219,7 @@ app.get('/api/health', (c) =>
 );
 
 const MONITOR_COLUMNS = `id, url, name, interval_minutes, status, last_checked_at, last_response_time_ms,
+  fail_streak, accepted_status, keyword, maintenance_until,
   user_id, created_at, is_public, (discord_webhook IS NOT NULL) AS has_webhook, (telegram_chat_id IS NOT NULL) AS has_telegram`;
 
 /** Uptime from hourly counters: ≤ 25 rows per monitor instead of every ping. */
@@ -279,8 +319,8 @@ app.post('/api/monitors', async (c) => {
   const maxMonitors = PLAN_LIMITS[settings.plan].maxMonitors;
   // Capacity and count are re-checked inside the INSERT itself, so concurrent requests can't overshoot.
   const created = await c.env.DB.prepare(
-    `INSERT INTO monitors (url, name, interval_minutes, discord_webhook, telegram_chat_id, is_public)
-     SELECT ?1, ?2, ?3, ?4, ?7, ?8
+    `INSERT INTO monitors (url, name, interval_minutes, discord_webhook, telegram_chat_id, is_public, accepted_status, keyword)
+     SELECT ?1, ?2, ?3, ?4, ?7, ?8, ?9, ?10
      WHERE (SELECT COUNT(*) FROM monitors) < ?5
        AND (${ACTIVE_LOAD_SQL}) + 1.0 / ?3 <= ?6 + 1e-9
      RETURNING *`,
@@ -294,6 +334,8 @@ app.post('/api/monitors', async (c) => {
       settings.checksPerMinute,
       input.telegram_chat_id,
       input.is_public ? 1 : 0,
+      input.accepted_status,
+      input.keyword,
     )
     .first<Monitor>();
   if (!created) {
@@ -306,7 +348,16 @@ app.post('/api/monitors', async (c) => {
   return c.json(withoutWebhook(created), 201);
 });
 
-const EDIT_FIELDS = ['url', 'name', 'interval_minutes', 'discord_webhook', 'telegram_chat_id', 'is_public'] as const;
+const EDIT_FIELDS = [
+  'url',
+  'name',
+  'interval_minutes',
+  'discord_webhook',
+  'telegram_chat_id',
+  'is_public',
+  'accepted_status',
+  'keyword',
+] as const;
 
 /** Validates a partial edit; `null` or `""` for an alert destination means "remove". */
 function parseMonitorEdit(b: Record<string, unknown>, botToken?: string) {
@@ -318,6 +369,8 @@ function parseMonitorEdit(b: Record<string, unknown>, botToken?: string) {
     discord_webhook?: string | null;
     telegram_chat_id?: string | null;
     is_public?: boolean;
+    accepted_status?: string | null;
+    keyword?: string | null;
   } = {};
 
   if (b.url !== undefined) {
@@ -354,17 +407,45 @@ function parseMonitorEdit(b: Record<string, unknown>, botToken?: string) {
     if (typeof b.is_public !== 'boolean') errors.push('is_public must be true or false');
     else edit.is_public = b.is_public;
   }
+  Object.assign(edit, parseCheckRules(b, errors));
   if (errors.length) throw new HTTPException(400, { message: errors.join('; ') });
   return edit;
 }
 
-// PATCH /api/monitors/:id: edit fields, or pause / resume (both need free capacity when they add load)
+// PATCH /api/monitors/:id: edit fields, pause / resume (both need free capacity when they add load),
+// or start / end a maintenance window
 app.patch('/api/monitors/:id', async (c) => {
   const id = parseId(c.req.param('id'));
   const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+  const actions = [EDIT_FIELDS.some((f) => body[f] !== undefined), body.paused !== undefined, body.maintenance_minutes !== undefined];
+  if (actions.filter(Boolean).length > 1) {
+    throw new HTTPException(400, { message: 'Send edit fields, paused or maintenance_minutes, one at a time' });
+  }
+
+  if (body.maintenance_minutes !== undefined) {
+    const minutes = body.maintenance_minutes;
+    if (typeof minutes !== 'number' || !Number.isInteger(minutes) || minutes < 0 || minutes > MAINTENANCE_MAX_MINUTES) {
+      throw new HTTPException(400, { message: `maintenance_minutes must be an integer between 0 (end it) and ${MAINTENANCE_MAX_MINUTES}` });
+    }
+    const now = Date.now();
+    // Starting: the monitor isn't checked until then, so its status starts over and an ongoing outage
+    // is closed. Ending: check it right away.
+    const [, updated] = await c.env.DB.batch([
+      c.env.DB.prepare('UPDATE incidents SET ended_at = ?2 WHERE monitor_id = ?1 AND ended_at IS NULL AND ?3 > 0').bind(id, now, minutes),
+      minutes > 0
+        ? c.env.DB.prepare(
+            `UPDATE monitors SET maintenance_until = ?2, fail_streak = 0,
+               status = CASE WHEN status = 'PAUSED' THEN status ELSE 'PENDING' END
+             WHERE id = ?1 RETURNING *`,
+          ).bind(id, now + minutes * 60_000)
+        : c.env.DB.prepare('UPDATE monitors SET maintenance_until = NULL, last_checked_at = NULL WHERE id = ?1 RETURNING *').bind(id),
+    ]);
+    const row = updated.results[0] as Monitor | undefined;
+    if (!row) return c.json({ error: 'Monitor not found' }, 404);
+    return c.json(withoutWebhook(row));
+  }
 
   if (EDIT_FIELDS.some((f) => body[f] !== undefined)) {
-    if (body.paused !== undefined) throw new HTTPException(400, { message: 'Edit fields and paused cannot be combined' });
     const edit = parseMonitorEdit(body, c.env.TELEGRAM_BOT_TOKEN);
     const existing = await c.env.DB.prepare('SELECT * FROM monitors WHERE id = ?').bind(id).first<Monitor>();
     if (!existing) return c.json({ error: 'Monitor not found' }, 404);
@@ -374,6 +455,10 @@ app.patch('/api/monitors/:id', async (c) => {
     const interval = edit.interval_minutes ?? existing.interval_minutes;
     const hookChanged = edit.discord_webhook !== undefined;
     const chatChanged = edit.telegram_chat_id !== undefined;
+    const statusChanged = edit.accepted_status !== undefined && edit.accepted_status !== existing.accepted_status;
+    const keywordChanged = edit.keyword !== undefined && edit.keyword !== existing.keyword;
+    // New URL or new rules: the next check (right away) starts from a clean slate.
+    const recheck = urlChanged || statusChanged || keywordChanged;
     // A shorter interval on an active monitor must still fit; checked inside the UPDATE (no race).
     const updated = await c.env.DB.prepare(
       `UPDATE monitors SET
@@ -381,8 +466,10 @@ app.patch('/api/monitors/:id', async (c) => {
          discord_webhook = CASE WHEN ?5 THEN ?6 ELSE discord_webhook END,
          telegram_chat_id = CASE WHEN ?9 THEN ?10 ELSE telegram_chat_id END,
          is_public = CASE WHEN ?11 THEN ?12 ELSE is_public END,
+         accepted_status = ?13, keyword = ?14,
+         fail_streak = CASE WHEN ?15 THEN 0 ELSE fail_streak END,
          status = CASE WHEN ?7 AND status != 'PAUSED' THEN 'PENDING' ELSE status END,
-         last_checked_at = CASE WHEN ?7 OR ?4 != interval_minutes THEN NULL ELSE last_checked_at END,
+         last_checked_at = CASE WHEN ?15 OR ?4 != interval_minutes THEN NULL ELSE last_checked_at END,
          last_response_time_ms = CASE WHEN ?7 THEN NULL ELSE last_response_time_ms END
        WHERE id = ?1
          AND (status = 'PAUSED' OR (${ACTIVE_LOAD_SQL}) - 1.0 / interval_minutes + 1.0 / ?4 <= ?8 + 1e-9)
@@ -401,6 +488,9 @@ app.patch('/api/monitors/:id', async (c) => {
         edit.telegram_chat_id ?? null,
         edit.is_public === undefined ? 0 : 1,
         edit.is_public ? 1 : 0,
+        edit.accepted_status === undefined ? existing.accepted_status : edit.accepted_status,
+        edit.keyword === undefined ? existing.keyword : edit.keyword,
+        recheck ? 1 : 0,
       )
       .first<Monitor>();
     if (!updated) {
@@ -431,7 +521,7 @@ app.patch('/api/monitors/:id', async (c) => {
   const { settings, usage } = await loadSettingsAndUsage(c.env.DB);
   // Resuming an already active monitor is a no-op; a paused one must fit in the remaining capacity.
   const resumed = await c.env.DB.prepare(
-    `UPDATE monitors SET status = 'PENDING', last_checked_at = NULL
+    `UPDATE monitors SET status = 'PENDING', fail_streak = 0, last_checked_at = NULL
      WHERE id = ?1 AND status = 'PAUSED' AND (${ACTIVE_LOAD_SQL}) + 1.0 / interval_minutes <= ?2 + 1e-9
      RETURNING *`,
   )
@@ -448,9 +538,10 @@ app.patch('/api/monitors/:id', async (c) => {
 // DELETE /api/monitors/:id
 app.delete('/api/monitors/:id', async (c) => {
   const id = parseId(c.req.param('id'));
-  const [, , , del] = await c.env.DB.batch([
+  const [, , , , del] = await c.env.DB.batch([
     c.env.DB.prepare('DELETE FROM pings WHERE monitor_id = ?').bind(id),
     c.env.DB.prepare('DELETE FROM ping_stats_hourly WHERE monitor_id = ?').bind(id),
+    c.env.DB.prepare('DELETE FROM ping_stats_daily WHERE monitor_id = ?').bind(id),
     c.env.DB.prepare('DELETE FROM incidents WHERE monitor_id = ?').bind(id),
     c.env.DB.prepare('DELETE FROM monitors WHERE id = ?').bind(id),
   ]);
@@ -523,6 +614,76 @@ app.get('/api/monitors/:id/pings', async (c) => {
   return c.json(results.reverse());
 });
 
+// GET /api/monitors/:id/stats?range=24h|7d|30d: hourly uptime and average response time
+app.get('/api/monitors/:id/stats', async (c) => {
+  const id = parseId(c.req.param('id'));
+  const range = c.req.query('range') ?? '24h';
+  if (!Object.hasOwn(STATS_RANGES, range)) {
+    throw new HTTPException(400, { message: `range must be one of: ${Object.keys(STATS_RANGES).join(', ')}` });
+  }
+  await assertVisible(c, id);
+  const since = Math.floor(Date.now() / HOUR_MS) * HOUR_MS - (STATS_RANGES[range as StatsRange] - 1) * HOUR_MS;
+  const { results } = await c.env.DB.prepare(
+    'SELECT hour, checks, ok, response_ms_sum FROM ping_stats_hourly WHERE monitor_id = ? AND hour >= ? ORDER BY hour',
+  )
+    .bind(id, since)
+    .all<{ hour: number; checks: number; ok: number; response_ms_sum: number }>();
+  return c.json<StatsPoint[]>(
+    results.map((r) => ({
+      hour: r.hour,
+      checks: r.checks,
+      ok: r.ok,
+      // Hours from before response times were recorded have a 0 sum: unknown, not 0 ms.
+      avg_ms: r.checks > 0 && r.response_ms_sum > 0 ? Math.round(r.response_ms_sum / r.checks) : null,
+    })),
+  );
+});
+
+const STATUS_DAYS = 90;
+const DAY_MS = 24 * HOUR_MS;
+
+// GET /api/status: public status page (public monitors only, even for the admin)
+app.get('/api/status', async (c) => {
+  const today = Math.floor(Date.now() / DAY_MS) * DAY_MS;
+  const from = today - (STATUS_DAYS - 1) * DAY_MS;
+  const PUBLIC_JOIN = 'JOIN monitors m ON m.id = s.monitor_id AND m.is_public = 1';
+  const [monitors, daily, todayRows, incidents] = await c.env.DB.batch([
+    c.env.DB.prepare('SELECT id, name, status, maintenance_until FROM monitors WHERE is_public = 1 ORDER BY created_at'),
+    // Finished days come from the daily rollup, today from the live hourly counters.
+    c.env.DB.prepare(
+      `SELECT s.monitor_id, s.day, s.checks, s.ok FROM ping_stats_daily s ${PUBLIC_JOIN}
+       WHERE s.day >= ? AND s.day < ? ORDER BY s.day`,
+    ).bind(from, today),
+    c.env.DB.prepare(
+      `SELECT s.monitor_id, SUM(s.checks) AS checks, SUM(s.ok) AS ok FROM ping_stats_hourly s ${PUBLIC_JOIN}
+       WHERE s.hour >= ? GROUP BY s.monitor_id`,
+    ).bind(today),
+    c.env.DB.prepare(
+      `SELECT s.*, m.name AS monitor_name FROM incidents s ${PUBLIC_JOIN}
+       WHERE s.started_at >= ? OR s.ended_at IS NULL ORDER BY s.started_at DESC LIMIT 20`,
+    ).bind(today - 13 * DAY_MS),
+  ]);
+
+  type DayRow = { monitor_id: number; day: number; checks: number; ok: number };
+  const days = new Map<number, DayRow[]>();
+  for (const r of daily.results as DayRow[]) days.set(r.monitor_id, [...(days.get(r.monitor_id) ?? []), r]);
+  for (const r of todayRows.results as Omit<DayRow, 'day'>[]) {
+    if (r.checks > 0) days.set(r.monitor_id, [...(days.get(r.monitor_id) ?? []), { ...r, day: today }]);
+  }
+
+  c.header('Cache-Control', 'public, max-age=60');
+  return c.json<StatusPage>({
+    days: STATUS_DAYS,
+    monitors: (monitors.results as Pick<Monitor, 'id' | 'name' | 'status' | 'maintenance_until'>[]).map((m) => {
+      const list = (days.get(m.id) ?? []).map(({ day, checks, ok }) => ({ day, checks, ok }));
+      const checks = list.reduce((s, d) => s + d.checks, 0);
+      const ok = list.reduce((s, d) => s + d.ok, 0);
+      return { ...m, uptime: checks > 0 ? Math.round((ok / checks) * 10000) / 100 : null, days: list };
+    }),
+    incidents: incidents.results as StatusPage['incidents'],
+  });
+});
+
 // GET /api/settings: plan, capacity and current usage
 app.get('/api/settings', async (c) => {
   const { settings, usage } = await loadSettingsAndUsage(c.env.DB);
@@ -554,7 +715,7 @@ app.patch('/api/settings', async (c) => {
  */
 const PLACEHOLDER_ORIGIN = 'https://pingward-site.invalid';
 
-app.get('/', async (c) => {
+const withRealOrigin = async (c: Context<{ Bindings: Env }>) => {
   const res = await c.env.ASSETS.fetch(c.req.raw);
   if (!res.headers.get('Content-Type')?.includes('text/html')) return res;
   const origin = new URL(c.req.url).origin;
@@ -566,7 +727,9 @@ app.get('/', async (c) => {
       },
     })
     .transform(res);
-});
+};
+app.get('/', withRealOrigin);
+app.get('/status', withRealOrigin);
 
 // Other non-API paths normally never reach the Worker (see run_worker_first), but hand them to the assets just in case.
 app.notFound((c) =>

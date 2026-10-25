@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import { loadOf } from "@pingward/shared";
+import { KEYWORD_MAX_LENGTH, loadOf, parseAcceptedStatus } from "@pingward/shared";
 import { api, type Monitor, type MonitorEdit, type SettingsInfo } from "@/lib/api";
 import { TelegramField } from "./telegram-field";
 import { Button, Field, Input, Modal } from "./ui";
@@ -59,6 +59,12 @@ export function MonitorFormDialog({
     const url = String(data.get("url")).trim();
     const interval = Number(data.get("interval"));
     const hook = String(data.get("webhook") || "").trim();
+    const acceptedStatus = String(data.get("accepted_status") || "").trim();
+    const keyword = String(data.get("keyword") || "");
+    if (acceptedStatus) {
+      const parsed = parseAcceptedStatus(acceptedStatus);
+      if (typeof parsed === "string") return setError(parsed.replace("accepted_status", "Accepted status codes"));
+    }
     setBusy(true);
     setError(null);
     try {
@@ -70,6 +76,8 @@ export function MonitorFormDialog({
           discord_webhook: hook || undefined,
           telegram_chat_id: chat.trim() || undefined,
           is_public: isPublic,
+          accepted_status: acceptedStatus || undefined,
+          keyword: keyword || undefined,
         });
       } else {
         // Send only what changed; alert destinations are never sent to the browser, so "unchanged" = left empty.
@@ -82,6 +90,8 @@ export function MonitorFormDialog({
         if (removeChat) edit.telegram_chat_id = null;
         else if (chat.trim()) edit.telegram_chat_id = chat.trim();
         if (isPublic !== editing.is_public) edit.is_public = isPublic;
+        if (acceptedStatus !== (editing.accepted_status ?? "")) edit.accepted_status = acceptedStatus || null;
+        if (keyword !== (editing.keyword ?? "")) edit.keyword = keyword || null;
         if (Object.keys(edit).length > 0) await api.editMonitor(editing.id, edit);
       }
       onSaved();
@@ -151,6 +161,22 @@ export function MonitorFormDialog({
           remove={removeChat}
           onRemoveChange={setRemoveChat}
         />
+        <details className="group rounded-lg border border-border px-3 py-2" open={Boolean(editing?.accepted_status || editing?.keyword)}>
+          <summary className="cursor-pointer select-none text-sm font-medium">
+            Advanced checks <span className="font-normal text-muted">(optional)</span>
+          </summary>
+          <div className="mt-3 flex flex-col gap-4 pb-1">
+            <Field
+              label="Accepted status codes"
+              hint="Empty = any 2xx. Checked on the final response, after redirects."
+            >
+              <Input name="accepted_status" placeholder="200-299, 401" defaultValue={editing?.accepted_status ?? ""} />
+            </Field>
+            <Field label="Must contain" hint="Text that has to appear on the page (first 64 KB, case-sensitive).">
+              <Input name="keyword" maxLength={KEYWORD_MAX_LENGTH} placeholder="Welcome" defaultValue={editing?.keyword ?? ""} />
+            </Field>
+          </div>
+        </details>
         {error && <p className="rounded-lg bg-down-soft px-3 py-2 text-sm text-down">{error}</p>}
         <div className="mt-1 flex justify-end gap-2">
           <Button type="button" variant="ghost" onClick={onClose}>

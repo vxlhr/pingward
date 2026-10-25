@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PLAN_LIMITS, worstCaseSubrequests } from '@pingward/shared';
 import { MAX_REDIRECTS, checkMonitor, runScheduledChecks, selectDueMonitors } from '../src/checker';
+import { isAlertWorthy, nextState } from '../src/alerts';
 import { buildDiscordPayload } from '../src/discord';
 import type { Env, Monitor } from '../src/types';
 
@@ -18,6 +19,10 @@ function monitor(overrides: Partial<Monitor> = {}): Monitor {
     discord_webhook: null,
     telegram_chat_id: null,
     is_public: 1,
+    fail_streak: 0,
+    accepted_status: null,
+    keyword: null,
+    maintenance_until: null,
     user_id: null,
     created_at: NOW - 86_400_000,
     ...overrides,
@@ -44,6 +49,20 @@ describe('selectDueMonitors', () => {
     expect(selectDueMonitors([monitor({ status: 'PAUSED', last_checked_at: null })], NOW, 8)).toHaveLength(0);
   });
 
+  it('skips a monitor during its maintenance window, and picks it up again afterwards', () => {
+    const m = monitor({ last_checked_at: null, maintenance_until: NOW + 60_000 });
+    expect(selectDueMonitors([m], NOW, 8)).toHaveLength(0);
+    expect(selectDueMonitors([m], NOW + 60_000, 8)).toHaveLength(1);
+  });
+
+  it('re-checks a failed monitor after a minute, ahead of the others', () => {
+    const suspect = monitor({ id: 1, interval_minutes: 30, fail_streak: 1, last_checked_at: NOW - 60_000 });
+    const waiting = monitor({ id: 2, last_checked_at: NOW - 60 * 60_000 });
+    expect(selectDueMonitors([waiting, suspect], NOW, 1).map((m) => m.id)).toEqual([1]);
+    // A confirmed outage goes back to the normal interval.
+    expect(selectDueMonitors([{ ...suspect, status: 'DOWN' }], NOW, 8)).toHaveLength(0);
+  });
+
   it('puts the longest-waiting first and respects the per-run capacity', () => {
     const many = Array.from({ length: 20 }, (_, i) => monitor({ id: i + 1, last_checked_at: NOW - (100 + i) * 60_000 }));
     const due = selectDueMonitors(many, NOW, 8);
@@ -65,6 +84,29 @@ describe('checkMonitor', () => {
   it('treats 5xx as DOWN', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('err', { status: 503 })));
     expect(await checkMonitor(monitor())).toMatchObject({ ok: false, statusCode: 503, error: 'HTTP 503' });
+  });
+
+  it('accepts the configured status codes instead of 2xx', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('login', { status: 401 })));
+    expect(await checkMonitor(monitor({ accepted_status: '200-299,401' }))).toMatchObject({ ok: true, statusCode: 401 });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('ok', { status: 200 })));
+    expect(await checkMonitor(monitor({ accepted_status: '204' }))).toMatchObject({ ok: false, error: 'HTTP 200' });
+  });
+
+  it('requires the keyword in the body', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('<h1>Welcome back</h1>', { status: 200 })));
+    expect(await checkMonitor(monitor({ keyword: 'Welcome' }))).toMatchObject({ ok: true });
+    expect(await checkMonitor(monitor({ keyword: 'Checkout' }))).toMatchObject({
+      ok: false,
+      statusCode: 200,
+      error: 'Keyword not found: "Checkout"',
+    });
+  });
+
+  it('only reads the first 64 KB of the body', async () => {
+    const big = 'a'.repeat(64 * 1024) + 'needle';
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(big, { status: 200 })));
+    expect(await checkMonitor(monitor({ keyword: 'needle' }))).toMatchObject({ ok: false });
   });
 
   it('treats timeouts and network errors as DOWN', async () => {
@@ -103,6 +145,27 @@ describe('checkMonitor', () => {
     const r = await checkMonitor(monitor());
     expect(r.error).toMatch(/Too many redirects/);
     expect(fetchMock).toHaveBeenCalledTimes(MAX_REDIRECTS + 1);
+  });
+});
+
+describe('nextState / isAlertWorthy (failure confirmation)', () => {
+  const result = (m: Monitor, ok: boolean) => ({ monitor: m, ok, statusCode: null, responseTimeMs: 1, error: null, checkedAt: NOW });
+
+  it('one failed check keeps the status and does not alert', () => {
+    expect(nextState(monitor(), false)).toEqual({ status: 'UP', failStreak: 1 });
+    expect(isAlertWorthy(result(monitor(), false))).toBe(false);
+    expect(isAlertWorthy(result(monitor({ status: 'PENDING' }), false))).toBe(false);
+  });
+
+  it('the second failure in a row turns it DOWN and alerts', () => {
+    expect(nextState(monitor({ fail_streak: 1 }), false)).toEqual({ status: 'DOWN', failStreak: 2 });
+    expect(isAlertWorthy(result(monitor({ fail_streak: 1 }), false))).toBe(true);
+  });
+
+  it('one success clears the streak; recovery alerts, a cleared blip does not', () => {
+    expect(nextState(monitor({ fail_streak: 1 }), true)).toEqual({ status: 'UP', failStreak: 0 });
+    expect(isAlertWorthy(result(monitor({ fail_streak: 1 }), true))).toBe(false);
+    expect(isAlertWorthy(result(monitor({ status: 'DOWN', fail_streak: 4 }), true))).toBe(true);
   });
 });
 
@@ -149,9 +212,10 @@ describe('runScheduledChecks', () => {
 
   it('alerts on a status change, but not for a monitor paused mid-check', async () => {
     const hook = 'https://discord.com/api/webhooks/1/x';
+    // Both already failed once, so this failure confirms the outage.
     const monitors = [
-      monitor({ id: 1, url: 'https://a.example', status: 'UP', last_checked_at: null, discord_webhook: hook }),
-      monitor({ id: 2, url: 'https://b.example', status: 'UP', last_checked_at: null, discord_webhook: hook }),
+      monitor({ id: 1, url: 'https://a.example', status: 'UP', fail_streak: 1, last_checked_at: null, discord_webhook: hook }),
+      monitor({ id: 2, url: 'https://b.example', status: 'UP', fail_streak: 1, last_checked_at: null, discord_webhook: hook }),
     ];
     const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) =>
       String(input).startsWith('https://discord.com') ? new Response(null, { status: 204 }) : new Response('down', { status: 500 }),
@@ -188,18 +252,25 @@ describe('runScheduledChecks', () => {
     const monitors = [
       monitor({ id: 1, url: 'https://still-down.example', status: 'DOWN', last_checked_at: null }),
       monitor({ id: 2, url: 'https://recovered.example', status: 'DOWN', last_checked_at: null }),
-      monitor({ id: 3, url: 'https://went-down.example', status: 'UP', last_checked_at: null }),
+      monitor({ id: 3, url: 'https://went-down.example', status: 'UP', fail_streak: 1, last_checked_at: NOW - 60_000 }),
       monitor({ id: 4, url: 'https://stays-up.example', status: 'UP', last_checked_at: null }),
+      monitor({ id: 5, url: 'https://blip-down.example', status: 'UP', last_checked_at: null }),
     ];
-    const { env, writes } = db(monitors, [], [1, 1, 1, 1]);
+    const { env, writes } = db(monitors, [], [1, 1, 1, 1, 1]);
     await runScheduledChecks(env, NOW);
 
     const incidentOps = writes().filter((s) => s.sql.includes('incidents'));
+    // Monitor 3 is confirming a failure, so it was checked (and written) first.
     expect(incidentOps.map((s) => [kind(s), s.args[0]])).toEqual([
+      ['INSERT INTO incidents', 3], // confirmed down: open, with the cause
       ['UPDATE incidents SET', 2], // recovered: close
-      ['INSERT INTO incidents', 3], // went down: open, with the cause
     ]);
-    expect(incidentOps[1].args[2]).toBe('HTTP 503');
+    // The outage started at the first failed check, not the confirming one.
+    expect(incidentOps[0].args.slice(1)).toEqual([NOW - 60_000, 'HTTP 503']);
+
+    // The first failure only bumps the streak: still UP, no incident.
+    const blip = writes().find((s) => kind(s) === 'UPDATE monitors SET' && s.args[4] === 5);
+    expect(blip?.args.slice(0, 2)).toEqual(['UP', 1]);
   });
 
   describe('free-tier subrequest budget (50 per cron run)', () => {
@@ -213,6 +284,7 @@ describe('runScheduledChecks', () => {
           id: i + 1,
           url: `https://site${i + 1}.example`,
           status: 'UP',
+          fail_streak: 1,
           last_checked_at: null,
           discord_webhook: 'https://discord.com/api/webhooks/1/x',
           telegram_chat_id: '123456789',
