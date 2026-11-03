@@ -1,5 +1,7 @@
-# Weekly update PRs for npm packages and the pinned GitHub Actions (security fixes arrive
-# right away through Dependabot security updates). Every PR has to pass CI before merging.
+# Weekly update PRs for npm packages, the pinned GitHub Actions and the Docker base image.
+# Major versions are skipped here (they need code changes and are done by hand); security
+# fixes still arrive right away through Dependabot security updates, majors included.
+# Every PR has to pass CI before merging.
 version: 2
 updates:
   - package-ecosystem: npm
@@ -7,6 +9,9 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       minor-and-patch:
         update-types: [minor, patch]
@@ -23,3 +28,7 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # Stay on the Node LTS line the project targets (.node-version); bump it by hand.
+      - dependency-name: node
+        update-types: ["version-update:semver-major"]
