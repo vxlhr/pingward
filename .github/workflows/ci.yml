@@ -5,16 +5,25 @@ on:
     branches: [main]
   pull_request:
 
+# Read-only token: this workflow only checks code, it never writes anything.
+permissions:
+  contents: read
+
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      # Actions are pinned to commit SHAs (tags can be moved); Dependabot keeps them up to date.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Dependencies — known vulnerabilities
+        run: npm audit --audit-level=moderate
       - name: Worker — typecheck
         run: npm run typecheck -w worker
       - name: Worker — tests
@@ -32,6 +41,7 @@ jobs:
           for i in $(seq 1 60); do
             if curl -sf http://localhost:8787/api/health; then
               curl -sf http://localhost:8787/ | grep -q '<title>PingWard</title>'
+              curl -sf http://localhost:8787/status | grep -q '<title>Status · PingWard</title>'
               exit 0
             fi
             sleep 2

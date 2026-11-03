@@ -2,7 +2,8 @@
 # Wrangler) with a local SQLite D1 database in /data. Cloudflare deploys don't use this file.
 
 # ---- build the static dashboard ---------------------------------------------
-FROM node:22-bookworm-slim AS build
+# Pinned by digest (a tag can be re-pointed); Dependabot proposes updates.
+FROM node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY shared/package.json shared/
@@ -13,7 +14,7 @@ COPY . .
 RUN npm run build
 
 # ---- runtime: only what the Worker needs ------------------------------------
-FROM node:22-bookworm-slim
+FROM node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da
 LABEL org.opencontainers.image.source="https://github.com/vxlhr/pingward" \
       org.opencontainers.image.description="PingWard: self-hosted uptime monitor (Cloudflare Worker on workerd + SQLite)" \
       org.opencontainers.image.licenses="MIT"
