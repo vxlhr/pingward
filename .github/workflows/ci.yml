@@ -22,8 +22,14 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # Everything that ships (the Worker and Wrangler/workerd, which the Docker image runs, plus the
+      # dashboard's runtime packages) must be free of known issues; build-only tools such as ESLint
+      # must at least be free of high and critical ones.
       - name: Dependencies — known vulnerabilities
-        run: npm audit --audit-level=moderate
+        run: |
+          npm audit -w worker -w shared --audit-level=moderate
+          npm audit -w frontend --omit=dev --audit-level=moderate
+          npm audit --audit-level=high
       - name: Worker — typecheck
         run: npm run typecheck -w worker
       - name: Worker — tests
