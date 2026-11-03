@@ -7,9 +7,10 @@ frontend/out
 .claude
 backup
 docs
-*.secrets.json
-.dev.vars
-**/.env
-**/.env.local
-**/.env.production
+**/*.secrets.json
+# Secrets and env files never enter the image, in any folder (examples are harmless).
+**/.dev.vars*
+!**/.dev.vars.example
+**/.env*
+!**/.env.example
 *.log
