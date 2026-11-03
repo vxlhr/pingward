@@ -5,6 +5,9 @@ import { isAlertWorthy, nextState } from '../src/alerts';
 import { buildDiscordPayload } from '../src/discord';
 import type { Env, Monitor } from '../src/types';
 
+/** Exact host of a fetched URL (a prefix or substring check would also match look-alike hosts). */
+const hostOf = (u: unknown) => new URL(String(u)).hostname;
+
 const NOW = 1_800_000_000_000;
 
 function monitor(overrides: Partial<Monitor> = {}): Monitor {
@@ -218,7 +221,7 @@ describe('runScheduledChecks', () => {
       monitor({ id: 2, url: 'https://b.example', status: 'UP', fail_streak: 1, last_checked_at: null, discord_webhook: hook }),
     ];
     const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) =>
-      String(input).startsWith('https://discord.com') ? new Response(null, { status: 204 }) : new Response('down', { status: 500 }),
+      hostOf(input) === 'discord.com' ? new Response(null, { status: 204 }) : new Response('down', { status: 500 }),
     );
     vi.stubGlobal('fetch', fetchMock);
     // Monitor 2's UPDATE changed nothing (paused while being checked).
@@ -239,7 +242,7 @@ describe('runScheduledChecks', () => {
       'UPDATE monitors SET',
       'INSERT INTO ping_stats_hourly',
     ]);
-    const discordCalls = fetchMock.mock.calls.filter(([u]) => String(u).startsWith('https://discord.com'));
+    const discordCalls = fetchMock.mock.calls.filter(([u]) => hostOf(u) === 'discord.com');
     expect(discordCalls).toHaveLength(1);
     expect(JSON.parse(String(discordCalls[0][1]?.body)).embeds[0].title).toContain('Site down');
   });
@@ -292,8 +295,8 @@ describe('runScheduledChecks', () => {
       );
       const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
         const url = String(input);
-        if (url.startsWith('https://discord.com')) return new Response(null, { status: 204 });
-        if (url.startsWith('https://api.telegram.org')) return Response.json({ ok: true });
+        if (hostOf(url) === 'discord.com') return new Response(null, { status: 204 });
+        if (hostOf(url) === 'api.telegram.org') return Response.json({ ok: true });
         const hops = (url.match(/\/r/g) ?? []).length;
         return hops < MAX_REDIRECTS ? redirect(`${url}/r`) : new Response('down', { status: 503 });
       });

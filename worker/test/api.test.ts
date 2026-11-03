@@ -3,6 +3,9 @@ import { PLAN_LIMITS, type TelegramInfo, type TestAlertResult } from '@pingward/
 import { app } from '../src/index';
 import type { Env } from '../src/types';
 
+/** Exact host of a fetched URL (a prefix or substring check would also match look-alike hosts). */
+const hostOf = (u: unknown) => new URL(String(u)).hostname;
+
 const unreachable = () =>
   vi.fn(() => {
     throw new Error('DB should not have been called');
@@ -367,7 +370,7 @@ describe('Telegram', () => {
 
   it('test alert reports each channel separately', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) =>
-      String(input).startsWith('https://api.telegram.org')
+      hostOf(input) === 'api.telegram.org'
         ? Response.json({ ok: false, description: 'Bad Request: chat not found' }, { status: 400 })
         : new Response(null, { status: 204 }),
     );
@@ -378,7 +381,7 @@ describe('Telegram', () => {
     const { results } = (await res.json()) as TestAlertResult;
     expect(results[0]).toEqual({ channel: 'discord', ok: true });
     expect(results[1]).toMatchObject({ channel: 'telegram', ok: false, error: expect.stringContaining('Send any message to the bot first') });
-    const tgCall = fetchMock.mock.calls.find(([u]) => String(u).includes('api.telegram.org')) as unknown as [string, RequestInit];
+    const tgCall = fetchMock.mock.calls.find(([u]) => hostOf(u) === 'api.telegram.org') as unknown as [string, RequestInit];
     expect(tgCall[0]).toBe(`https://api.telegram.org/bot${TOKEN}/sendMessage`);
     expect(JSON.parse(String(tgCall[1].body))).toMatchObject({ chat_id: '-1001234567890', parse_mode: 'HTML' });
   });
